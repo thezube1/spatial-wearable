@@ -10,9 +10,9 @@
 #define TFT_DC    3   // D2 - GPIO3
 #define TFT_RST  -1   // RST tied to 3.3V
 
-// GPS UART pins
-#define GPS_RX_PIN 44  // D7 - connects to GPS TXD
-#define GPS_TX_PIN 43  // D6 - connects to GPS RXD
+// GPS UART pins (avoid D6/D7 GPIO43/44 - conflict with UART0 on ESP32S3)
+#define GPS_RX_PIN 8   // D9 - GPIO8 - connects to GPS TXD
+#define GPS_TX_PIN 1   // D0 - GPIO1 - connects to GPS RXD
 
 Adafruit_GC9A01A tft(TFT_CS, TFT_DC, TFT_RST);
 TinyGPSPlus gps;
@@ -22,6 +22,10 @@ double prevLat = 0.0;
 double prevLng = 0.0;
 int prevSats = -1;
 bool prevFix = false;
+
+// GPS diagnostics
+bool rawDumpMode = true;  // dump raw NMEA for first 30 seconds
+unsigned long startTime = 0;
 
 void drawLabel(const char* text, int y, uint16_t color) {
   tft.setTextColor(color, GC9A01A_BLACK);
@@ -95,6 +99,8 @@ void setup() {
   delay(1000);
 
   Serial.println("GPS + Display Test");
+  Serial.println("Raw NMEA output for 30s to diagnose GPS...");
+  startTime = millis();
 
   tft.begin();
   tft.setRotation(0);
@@ -105,9 +111,24 @@ void setup() {
 }
 
 void loop() {
-  // Feed GPS data
+  // Feed GPS data, optionally dump raw NMEA
   while (Serial1.available()) {
-    gps.encode(Serial1.read());
+    char c = Serial1.read();
+    gps.encode(c);
+    // Dump raw NMEA for first 30 seconds to diagnose
+    if (rawDumpMode) {
+      Serial.write(c);
+    }
+  }
+
+  // Stop raw dump after 30 seconds
+  if (rawDumpMode && millis() - startTime > 30000) {
+    rawDumpMode = false;
+    Serial.println("\n--- Raw NMEA dump ended ---");
+    Serial.printf("Chars processed: %lu\n", gps.charsProcessed());
+    Serial.printf("Sentences with fix: %lu\n", gps.sentencesWithFix());
+    Serial.printf("Failed checksums: %lu\n", gps.failedChecksum());
+    Serial.printf("Passed checksums: %lu\n", gps.passedChecksum());
   }
 
   // Update display every 500ms
@@ -121,9 +142,11 @@ void loop() {
       Serial.printf("Lat: %.6f  Lng: %.6f  Sats: %d\n",
         gps.location.lat(), gps.location.lng(), gps.satellites.value());
     } else {
-      Serial.printf("No fix yet. Sats: %d  Chars: %lu\n",
+      Serial.printf("No fix yet. Sats: %d  Chars: %lu  Pass: %lu  Fail: %lu\n",
         gps.satellites.isValid() ? gps.satellites.value() : 0,
-        gps.charsProcessed());
+        gps.charsProcessed(),
+        gps.passedChecksum(),
+        gps.failedChecksum());
     }
   }
 }
