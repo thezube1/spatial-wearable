@@ -75,12 +75,13 @@ double haversine(double lat1, double lon1, double lat2, double lon2) {
 
 // ESP-NOW send callback (v3.x API: first arg is wifi_tx_info_t*)
 void onDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
-  // Uncomment for debugging delivery issues:
-  // Serial.printf("Send status: %s\n", status == ESP_NOW_SEND_SUCCESS ? "OK" : "FAIL");
+  Serial.printf("[ESP-NOW] Send: %s\n", status == ESP_NOW_SEND_SUCCESS ? "OK" : "FAIL");
 }
 
 // ESP-NOW receive callback
-void onDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
+void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
+  Serial.printf("[ESP-NOW] Recv %d bytes from %02X:%02X:%02X:%02X:%02X:%02X\n",
+    len, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
   if (len == sizeof(GpsMessage)) {
     memcpy(&peerData, data, sizeof(GpsMessage));
     peerReceived = true;
@@ -96,9 +97,19 @@ void setup() {
   Serial.println("  ESP-NOW GPS Distance Calculator");
   Serial.println("==========================================");
 
-  // Print MAC address so user can note it for unicast mode
+  // Init WiFi radio (needed for ESP-NOW, but does NOT connect to any network)
   WiFi.mode(WIFI_STA);
+  WiFi.disconnect();  // ensure not trying to connect to anything
+  delay(500);         // give radio time to start
+
+  Serial.printf("WiFi channel: %d\n", WiFi.channel());
   Serial.printf("This board's MAC: %s\n", WiFi.macAddress().c_str());
+
+  // Sanity check -- if MAC is all zeros, radio didn't start
+  if (WiFi.macAddress() == "00:00:00:00:00:00") {
+    Serial.println("WARNING: MAC is all zeros! Radio may not have initialized.");
+    Serial.println("Try: power cycle the board, or check if WiFi is supported.");
+  }
   Serial.println();
   Serial.println("Wiring (same on both boards):");
   Serial.println("  GPS TXD --> D0 (GPIO1)");
@@ -154,7 +165,10 @@ void loop() {
       myData.lng = 0;
     }
 
-    esp_now_send(broadcastAddress, (uint8_t *)&myData, sizeof(myData));
+    esp_err_t result = esp_now_send(broadcastAddress, (uint8_t *)&myData, sizeof(myData));
+    if (result != ESP_OK) {
+      Serial.printf("[ESP-NOW] Send error: %s\n", esp_err_to_name(result));
+    }
 
     // Print status
     Serial.println("--- Status ---");
