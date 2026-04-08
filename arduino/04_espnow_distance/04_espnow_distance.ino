@@ -32,6 +32,7 @@
 
 #include <WiFi.h>
 #include <esp_now.h>
+#include <esp_wifi.h>
 #include <TinyGPSPlus.h>
 
 // GPS pin config (same as 02_gps_test Option A)
@@ -79,9 +80,10 @@ void onDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
 }
 
 // ESP-NOW receive callback
-void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
+void onDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
   Serial.printf("[ESP-NOW] Recv %d bytes from %02X:%02X:%02X:%02X:%02X:%02X\n",
-    len, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    len, info->src_addr[0], info->src_addr[1], info->src_addr[2],
+    info->src_addr[3], info->src_addr[4], info->src_addr[5]);
   if (len == sizeof(GpsMessage)) {
     memcpy(&peerData, data, sizeof(GpsMessage));
     peerReceived = true;
@@ -101,6 +103,9 @@ void setup() {
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();  // ensure not trying to connect to anything
   delay(500);         // give radio time to start
+
+  // Lock to channel 1 so both boards are guaranteed on the same channel
+  esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
 
   Serial.printf("WiFi channel: %d\n", WiFi.channel());
   Serial.printf("This board's MAC: %s\n", WiFi.macAddress().c_str());
@@ -130,7 +135,7 @@ void setup() {
   // Add broadcast peer
   esp_now_peer_info_t peerInfo = {};
   memcpy(peerInfo.peer_addr, broadcastAddress, 6);
-  peerInfo.channel = 0;  // use current channel
+  peerInfo.channel = 1;  // must match esp_wifi_set_channel above
   peerInfo.encrypt = false;
 
   if (esp_now_add_peer(&peerInfo) != ESP_OK) {
