@@ -38,24 +38,21 @@ bool macMatch(const uint8_t *a, const uint8_t *b) {
   return memcmp(a, b, 6) == 0;
 }
 
-// ESP-NOW send callback (Arduino Core 3.x / ESP-IDF 5.x signature)
-void onDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
-  Serial.printf("[SEND] #%lu -> %s\n", sendCounter,
+// Callbacks use simple signatures + cast at registration (tutorial pattern).
+// This works across Arduino Core 2.x and 3.x.
+void onDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+  Serial.printf("[SEND] #%lu -> %s\n", (unsigned long)sendCounter,
     status == ESP_NOW_SEND_SUCCESS ? "OK" : "FAIL");
 }
 
-// ESP-NOW receive callback (Arduino Core 3.x signature)
-void onDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
+void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
+  Serial.printf("[RECV] %d bytes from %02X:%02X:%02X:%02X:%02X:%02X\n",
+    len, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
   if (len == sizeof(PingMessage)) {
     PingMessage msg;
     memcpy(&msg, data, sizeof(msg));
-    Serial.printf("[RECV] from Board %d | #%lu | uptime %lu ms | RSSI %d\n",
-      msg.boardId, (unsigned long)msg.counter, (unsigned long)msg.uptime,
-      info->rx_ctrl->rssi);
-  } else {
-    Serial.printf("[RECV] unexpected %d bytes from %02X:%02X:%02X:%02X:%02X:%02X\n",
-      len, info->src_addr[0], info->src_addr[1], info->src_addr[2],
-      info->src_addr[3], info->src_addr[4], info->src_addr[5]);
+    Serial.printf("       Board %d | ping #%lu | uptime %lu ms\n",
+      msg.boardId, (unsigned long)msg.counter, (unsigned long)msg.uptime);
   }
 }
 
@@ -69,15 +66,11 @@ void setup() {
 
   // Start WiFi radio (required for ESP-NOW, does NOT connect to a network)
   WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
-  delay(500);
-
-  // Lock both boards to channel 1
-  esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
 
   // Read our own MAC and detect which board we are
+  // Use esp_wifi_get_mac for reliable byte-order matching
   uint8_t myMac[6];
-  WiFi.macAddress(myMac);
+  esp_wifi_get_mac(WIFI_IF_STA, myMac);
 
   Serial.printf("My MAC:  %02X:%02X:%02X:%02X:%02X:%02X\n",
     myMac[0], myMac[1], myMac[2], myMac[3], myMac[4], myMac[5]);
@@ -108,14 +101,15 @@ void setup() {
     while (true) delay(1000);
   }
 
-  esp_now_register_send_cb(onDataSent);
-  esp_now_register_recv_cb(onDataRecv);
+  // Cast pattern from RandomNerdTutorials -- works across Core 2.x and 3.x
+  esp_now_register_send_cb(esp_now_send_cb_t(onDataSent));
+  esp_now_register_recv_cb(esp_now_recv_cb_t(onDataRecv));
 
-  // Add unicast peer
-  esp_now_peer_info_t peerInfo = {};
+  // Add unicast peer (matching tutorial: channel=0, no ifidx override)
+  esp_now_peer_info_t peerInfo;
+  memset(&peerInfo, 0, sizeof(peerInfo));
   memcpy(peerInfo.peer_addr, peerMac, 6);
-  peerInfo.channel = 0;            // 0 = use current channel (set above to 1)
-  peerInfo.ifidx = WIFI_IF_STA;    // required: match WiFi.mode(WIFI_STA)
+  peerInfo.channel = 0;
   peerInfo.encrypt = false;
 
   if (esp_now_add_peer(&peerInfo) != ESP_OK) {

@@ -1,24 +1,19 @@
-//
-//  ContentView.swift
-//  ios-spatial-wearable
-//
-//  Created by Zubin Hydrie on 4/7/26.
-//
-
 import SwiftUI
 
 struct ContentView: View {
+    @Environment(BLEManager.self) private var bleManager
+    @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
+
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
+        if hasCompletedOnboarding {
+            DashboardView()
+        } else {
+            OnboardingView(hasCompletedOnboarding: $hasCompletedOnboarding)
         }
-        .padding()
     }
 }
 
 #Preview {
     ContentView()
+        .environment(BLEManager())
 }
