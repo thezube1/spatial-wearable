@@ -73,8 +73,8 @@ double haversine(double lat1, double lon1, double lat2, double lon2) {
   return EARTH_RADIUS * c;
 }
 
-// ESP-NOW send callback
-void onDataSent(const uint8_t *mac, esp_now_send_status_t status) {
+// ESP-NOW send callback (v3.x API: first arg is wifi_tx_info_t*)
+void onDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
   // Uncomment for debugging delivery issues:
   // Serial.printf("Send status: %s\n", status == ESP_NOW_SEND_SUCCESS ? "OK" : "FAIL");
 }
