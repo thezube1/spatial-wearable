@@ -461,7 +461,7 @@ Supabase (Postgres + Auth)
 
 The wearable exposes a read-only MAC characteristic; the iOS app reads it and POSTs to `/devices/link` to bind the device to the authenticated user. Firmware 10 adds persistent pairing in NVS (Preferences namespace `sw-pair`), a 5-second hold on the BOOT button (GPIO0) to forget the owner and re-enter pairing mode, an owner-write characteristic (`…abcf`) for iOS to commit the Supabase `user_id` during linking, and an owner-auth characteristic (`…abd0`) that iOS must write on every reconnect to be served by the wearable. Full protocol (UUIDs, value format, sequence, error handling): see `documentation/ble-pairing.md`.
 
-Firmware reference: `arduino/10_wearable_persistent_pairing/10_wearable_persistent_pairing.ino`.
+Firmware reference: `arduino/13_wearable_target_select/13_wearable_target_select.ino`. Firmware 13 adds a target-select characteristic (`…abd2`) so the iOS Group tab can steer the wearable at a specific group member's linked device MAC; target is persisted in NVS and filters ESP-NOW + BLE scans. Protocol details in `documentation/ble-pairing.md` under "Target Selection".
 
 ### API Base URL Convention
 

@@ -13,6 +13,7 @@ Firmware: `arduino/10_wearable_persistent_pairing/10_wearable_persistent_pairing
 | Owner-write | `12345678-1234-5678-1234-56781234abcf` | WRITE | Accepted ONLY while the wearable is in pairing mode. iOS writes the Supabase `user_id` (UUID string, UTF-8). Firmware stores it in NVS and exits pairing mode. |
 | Owner-auth | `12345678-1234-5678-1234-56781234abd0` | WRITE | Required on every reconnect once paired. iOS writes the same `user_id`; firmware compares to NVS and disconnects on mismatch. Centrals that don't write within 3 s of connecting are also disconnected. |
 | Location | `12345678-1234-5678-1234-56781234abd1` | READ, NOTIFY | 9-byte GPS payload pushed by the wearable every 15 s. Layout: `valid(u8) | lat(float32 LE) | lon(float32 LE)`. `valid=0` means no fix yet — lat/lon should be ignored. Added in firmware `12_wearable_location_ble`. |
+| Target-select | `12345678-1234-5678-1234-56781234abd2` | WRITE | Only accepted on an authed connection. iOS writes the group member the wearable should lock onto. Added in firmware `13_wearable_target_select`. |
 
 ## Persistent State (NVS)
 
@@ -87,3 +88,23 @@ pMacCharacteristic->setValue((uint8_t*)myMacStr, 17);
 ```
 
 All other behavior (ESP-NOW peer sync, GPS, heart rate, display, haptics) is unchanged from firmware 08.
+
+## Target Selection (firmware 13)
+
+The target-select characteristic (`abd2`) lets the iOS app tell the wearable which group member to lock onto. The wearable uses the MAC to filter inbound ESP-NOW packets and BLE scan results, and renders the name on the GC9A01 display.
+
+**Payload:**
+
+- **Set target:** `[6-byte MAC][1-byte name_len][name UTF-8]`. Total size must equal `7 + name_len`. `name_len` must be ≤ 24. The 6 bytes are the raw STA MAC of the target wearable in network order (same bytes that `AA:BB:CC:DD:EE:FF` encodes).
+- **Clear target:** single byte `0x00`. The wearable renders a dedicated "NOT TRACKING" state and ignores all peer traffic.
+
+**Auth:** writes are rejected unless the central has authenticated on the current connection (i.e. owner-auth on `abd0` succeeded).
+
+**Persistence:** the target is stored in the `sw-pair` NVS namespace under keys `tmac` (6 bytes) and `tname` (string), so it survives reboots. Forgetting the owner (5-second BOOT hold) also clears the target.
+
+**iOS behavior:**
+
+- Group has 0 other members → write `0x00` to clear.
+- Group has 1 other member → auto-write that member's MAC + display name.
+- Group has 2+ other members → user picks on the Group tab; selection persists locally in `@AppStorage("trackingTarget")`.
+- If the selected member has no `linked_device_mac`, surface a message in the UI and skip the BLE write.

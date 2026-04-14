@@ -8,6 +8,7 @@ let macReadCharacteristicUUID = CBUUID(string: "12345678-1234-5678-1234-56781234
 let ownerWriteCharacteristicUUID = CBUUID(string: "12345678-1234-5678-1234-56781234abcf")
 let ownerAuthCharacteristicUUID  = CBUUID(string: "12345678-1234-5678-1234-56781234abd0")
 let locationCharacteristicUUID   = CBUUID(string: "12345678-1234-5678-1234-56781234abd1")
+let targetCharacteristicUUID     = CBUUID(string: "12345678-1234-5678-1234-56781234abd2")
 
 struct WearableLocation: Equatable {
     let latitude: Double
@@ -67,6 +68,7 @@ final class BLEManager: NSObject, @unchecked Sendable {
     private var ownerWriteCharacteristic: CBCharacteristic?
     private var ownerAuthCharacteristic: CBCharacteristic?
     private var locationCharacteristic: CBCharacteristic?
+    private var targetCharacteristic: CBCharacteristic?
     private var rssiTimer: Timer?
 
     // Async support.
@@ -119,6 +121,7 @@ final class BLEManager: NSObject, @unchecked Sendable {
         spatialCharacteristic = nil
         macCharacteristic = nil
         locationCharacteristic = nil
+        targetCharacteristic = nil
         wearableLocation = nil
         connectionState = .disconnected
         rssi = 0
@@ -172,6 +175,7 @@ final class BLEManager: NSObject, @unchecked Sendable {
         if uuid == ownerWriteCharacteristicUUID { return ownerWriteCharacteristic }
         if uuid == ownerAuthCharacteristicUUID { return ownerAuthCharacteristic }
         if uuid == macReadCharacteristicUUID   { return macCharacteristic }
+        if uuid == targetCharacteristicUUID    { return targetCharacteristic }
         return nil
     }
 
@@ -198,20 +202,57 @@ final class BLEManager: NSObject, @unchecked Sendable {
     }
 
     private func writeString(_ value: String, toCharacteristic uuid: CBUUID) async throws {
+        guard let data = value.data(using: .utf8) else {
+            throw NSError(domain: "BLEManager", code: 12,
+                          userInfo: [NSLocalizedDescriptionKey: "Non-UTF8 value"])
+        }
+        try await writeData(data, toCharacteristic: uuid)
+    }
+
+    private func writeData(_ data: Data, toCharacteristic uuid: CBUUID) async throws {
         guard let peripheral = connectedPeripheral else {
             throw NSError(domain: "BLEManager", code: 10,
                           userInfo: [NSLocalizedDescriptionKey: "Not connected"])
         }
         let characteristic = try await waitForCharacteristic(uuid, timeout: 5.0)
-        guard let data = value.data(using: .utf8) else {
-            throw NSError(domain: "BLEManager", code: 12,
-                          userInfo: [NSLocalizedDescriptionKey: "Non-UTF8 value"])
-        }
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             self.pendingWriteContinuation = cont
             self.pendingWriteCharUUID = uuid
             peripheral.writeValue(data, for: characteristic, type: .withResponse)
         }
+    }
+
+    /// Push the selected group member's wearable MAC + display name to the
+    /// firmware. Payload: [6-byte MAC][1-byte name_len][name UTF-8 (<=24 bytes)].
+    /// Firmware persists in NVS and uses it to filter ESP-NOW + BLE scan results.
+    func setTrackingTarget(mac: String, name: String) async throws {
+        guard let macBytes = Self.parseMAC(mac) else {
+            throw NSError(domain: "BLEManager", code: 30,
+                          userInfo: [NSLocalizedDescriptionKey: "Invalid MAC: \(mac)"])
+        }
+        let nameData = Array(name.utf8.prefix(24))
+        var payload = Data()
+        payload.append(contentsOf: macBytes)
+        payload.append(UInt8(nameData.count))
+        payload.append(contentsOf: nameData)
+        try await writeData(payload, toCharacteristic: targetCharacteristicUUID)
+    }
+
+    /// Tell the wearable to stop tracking anyone (solo group or unlinked target).
+    func clearTrackingTarget() async throws {
+        try await writeData(Data([0x00]), toCharacteristic: targetCharacteristicUUID)
+    }
+
+    private static func parseMAC(_ s: String) -> [UInt8]? {
+        let parts = s.split(separator: ":")
+        guard parts.count == 6 else { return nil }
+        var out: [UInt8] = []
+        out.reserveCapacity(6)
+        for p in parts {
+            guard p.count == 2, let b = UInt8(p, radix: 16) else { return nil }
+            out.append(b)
+        }
+        return out
     }
 
     /// Rediscover and reconnect to the wristband whose MAC matches `mac`.
@@ -355,6 +396,7 @@ extension BLEManager: CBCentralManagerDelegate {
             self.ownerWriteCharacteristic = nil
             self.ownerAuthCharacteristic = nil
             self.locationCharacteristic = nil
+            self.targetCharacteristic = nil
             self.wearableLocation = nil
             self.connectionState = .disconnected
             self.rssi = 0
@@ -384,6 +426,7 @@ extension BLEManager: CBPeripheralDelegate {
                     ownerWriteCharacteristicUUID,
                     ownerAuthCharacteristicUUID,
                     locationCharacteristicUUID,
+                    targetCharacteristicUUID,
                 ], for: service
             )
         }
@@ -416,6 +459,8 @@ extension BLEManager: CBPeripheralDelegate {
                 DispatchQueue.main.async { self.ownerWriteCharacteristic = characteristic }
             } else if characteristic.uuid == ownerAuthCharacteristicUUID {
                 DispatchQueue.main.async { self.ownerAuthCharacteristic = characteristic }
+            } else if characteristic.uuid == targetCharacteristicUUID {
+                DispatchQueue.main.async { self.targetCharacteristic = characteristic }
             } else if characteristic.uuid == locationCharacteristicUUID {
                 DispatchQueue.main.async { self.locationCharacteristic = characteristic }
                 if characteristic.properties.contains(.notify) {

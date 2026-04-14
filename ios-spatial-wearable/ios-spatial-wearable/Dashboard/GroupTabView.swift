@@ -3,11 +3,18 @@ import UIKit
 
 struct GroupTabView: View {
     @Environment(OnboardingCoordinator.self) private var coordinator
+    @Environment(BLEManager.self) private var ble
 
     @State private var group: GroupDetail?
     @State private var me: UserProfile?
     @State private var isLoading = true
     @State private var errorMessage: String?
+    @State private var trackingStatus: String?
+
+    // Persisted per-group selection. Solo (no other members) => ignored.
+    // Exactly one other member => auto-target that member; this override only
+    // matters when the group has 2+ other members.
+    @AppStorage("trackingTarget") private var trackingTargetRaw: String = ""
 
     @State private var showRename = false
     @State private var showShare = false
@@ -68,6 +75,7 @@ struct GroupTabView: View {
             if let g = group {
                 AddMemberSheet(group: g) { updated in
                     group = updated
+                    Task { await pushTargetToWearable() }
                 }
             }
         }
@@ -87,6 +95,54 @@ struct GroupTabView: View {
             Button("Remove", role: .destructive) {
                 if let m = pendingRemove { Task { await remove(member: m) } }
             }
+        }
+    }
+
+    // Other members = everyone except me. The "effective target" is:
+    //   0 others → nil (wearable shows "Not tracking")
+    //   1 other  → auto-lock to that person
+    //   2+       → stored selection if still a member, else first other
+    private func otherMembers(_ g: GroupDetail) -> [GroupMember] {
+        g.members.filter { $0.user_id != me?.id }
+    }
+
+    private func effectiveTarget(in g: GroupDetail) -> GroupMember? {
+        let others = otherMembers(g)
+        if others.isEmpty { return nil }
+        if others.count == 1 { return others[0] }
+        if let stored = others.first(where: { $0.user_id == trackingTargetRaw }) {
+            return stored
+        }
+        return others.first
+    }
+
+    private func setTarget(_ member: GroupMember) {
+        trackingTargetRaw = member.user_id
+        Task { await pushTargetToWearable() }
+    }
+
+    private func pushTargetToWearable() async {
+        guard let g = group else { return }
+        guard ble.connectionState == .connected else {
+            trackingStatus = "Wearable not connected"
+            return
+        }
+        let target = effectiveTarget(in: g)
+        do {
+            if let t = target {
+                guard let mac = t.linked_device_mac else {
+                    trackingStatus = "\(t.display_name ?? t.username ?? "Member") has no linked wearable"
+                    return
+                }
+                let name = t.display_name ?? t.username ?? "Friend"
+                try await ble.setTrackingTarget(mac: mac, name: name)
+                trackingStatus = "Tracking \(name)"
+            } else {
+                try await ble.clearTrackingTarget()
+                trackingStatus = "Not tracking (solo group)"
+            }
+        } catch {
+            trackingStatus = "Sync failed: \(error.localizedDescription)"
         }
     }
 
@@ -237,6 +293,12 @@ struct GroupTabView: View {
                 memberRow(member, group: g)
                 if member.id != g.members.last?.id { Divider() }
             }
+            if let trackingStatus {
+                Text(trackingStatus)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 4)
+            }
         }
         .padding(16)
         .background(.background, in: RoundedRectangle(cornerRadius: 16))
@@ -246,6 +308,8 @@ struct GroupTabView: View {
         let isLeader = g.leader?.user_id == m.user_id
         let isCreatorOfGroup = g.created_by == m.user_id
         let isSelf = me?.id == m.user_id
+        let isTarget = effectiveTarget(in: g)?.user_id == m.user_id
+        let canPickTarget = !isSelf && otherMembers(g).count >= 2
         return HStack(spacing: 12) {
             ZStack {
                 Circle().fill(Color.blue.opacity(0.2)).frame(width: 40, height: 40)
@@ -273,6 +337,20 @@ struct GroupTabView: View {
                 }
             }
             Spacer()
+            if !isSelf && m.linked_device_mac != nil {
+                if isTarget {
+                    Label("Tracking", systemImage: "dot.radiowaves.left.and.right")
+                        .labelStyle(.titleAndIcon)
+                        .font(.caption2.weight(.bold))
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(Color.green.opacity(0.18), in: Capsule())
+                        .foregroundStyle(.green)
+                } else if canPickTarget {
+                    Button("Track") { setTarget(m) }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+            }
             if canManage && !isSelf && !isCreatorOfGroup {
                 Button {
                     pendingRemove = m
@@ -310,6 +388,7 @@ struct GroupTabView: View {
             me = try await meTask
             group = try await groupTask
             if let g = group { coordinator.createdGroup = g }
+            await pushTargetToWearable()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -354,6 +433,7 @@ struct GroupTabView: View {
         do {
             try await APIClient.shared.removeMember(groupId: g.id, userId: m.user_id)
             group = try await APIClient.shared.getGroup(id: g.id)
+            await pushTargetToWearable()
         } catch {
             errorMessage = error.localizedDescription
         }

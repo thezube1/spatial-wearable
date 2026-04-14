@@ -34,6 +34,7 @@ struct GroupMember: Codable, Identifiable, Hashable {
     let display_name: String?
     let avatar_url: String?
     let joined_at: String?
+    let linked_device_mac: String?
 }
 
 struct GroupSummary: Codable, Identifiable, Hashable {

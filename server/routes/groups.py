@@ -18,6 +18,8 @@ def _load_members(sb, group_id: str):
     ids = [j["user_id"] for j in joins]
     users = sb.table("users").select("id, username, display_name, avatar_url").in_("id", ids).execute().data or []
     by_id = {u["id"]: u for u in users}
+    devs = sb.table("devices").select("mac_address, linked_user_id").in_("linked_user_id", ids).execute().data or []
+    mac_by_user = {d["linked_user_id"]: d.get("mac_address") for d in devs if d.get("linked_user_id")}
     out = []
     for j in joins:
         u = by_id.get(j["user_id"], {})
@@ -27,6 +29,7 @@ def _load_members(sb, group_id: str):
             "display_name": u.get("display_name"),
             "avatar_url": u.get("avatar_url"),
             "joined_at": j["joined_at"],
+            "linked_device_mac": mac_by_user.get(j["user_id"]),
         })
     return out
 
