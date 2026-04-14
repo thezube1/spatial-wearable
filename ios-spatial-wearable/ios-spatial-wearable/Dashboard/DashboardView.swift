@@ -17,11 +17,17 @@ struct DashboardView: View {
             GroupTabView()
                 .tabItem { Label("Group", systemImage: "person.3.fill") }
 
+            LocationTabView()
+                .tabItem { Label("Map", systemImage: "map.fill") }
+
             DeviceTabView(device: $device, errorMessage: $errorMessage)
                 .tabItem { Label("Device", systemImage: "applewatch") }
         }
         .task {
             device = try? await APIClient.shared.getMyDevice()
+            if let g = try? await APIClient.shared.getMyGroup() {
+                coordinator.createdGroup = g
+            }
             await reconnectLoop()
         }
     }
@@ -85,7 +91,7 @@ struct DashboardView: View {
 
     private var eventCard: some View {
         card(title: "Event") {
-            if let e = coordinator.selectedEvent {
+            if let e = coordinator.selectedEvent ?? coordinator.createdGroup?.event {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(e.name).font(.headline)
                     if let v = e.venue { Text(v).foregroundStyle(.secondary).font(.subheadline) }

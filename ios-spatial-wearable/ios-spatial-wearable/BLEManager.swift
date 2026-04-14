@@ -7,6 +7,13 @@ let spatialCharacteristicUUID = CBUUID(string: "beb5483e-36e1-4688-b7f5-ea07361b
 let macReadCharacteristicUUID = CBUUID(string: "12345678-1234-5678-1234-56781234abce")
 let ownerWriteCharacteristicUUID = CBUUID(string: "12345678-1234-5678-1234-56781234abcf")
 let ownerAuthCharacteristicUUID  = CBUUID(string: "12345678-1234-5678-1234-56781234abd0")
+let locationCharacteristicUUID   = CBUUID(string: "12345678-1234-5678-1234-56781234abd1")
+
+struct WearableLocation: Equatable {
+    let latitude: Double
+    let longitude: Double
+    let receivedAt: Date
+}
 
 struct DiscoveredDevice: Identifiable {
     let id: UUID
@@ -27,6 +34,7 @@ final class BLEManager: NSObject, @unchecked Sendable {
     var lastReceivedString: String?
     var rssi: Int = 0
     var errorMessage: String?
+    var wearableLocation: WearableLocation?
 
     enum ConnectionState: Equatable {
         case disconnected, scanning, connecting, connected
@@ -58,6 +66,7 @@ final class BLEManager: NSObject, @unchecked Sendable {
     private var macCharacteristic: CBCharacteristic?
     private var ownerWriteCharacteristic: CBCharacteristic?
     private var ownerAuthCharacteristic: CBCharacteristic?
+    private var locationCharacteristic: CBCharacteristic?
     private var rssiTimer: Timer?
 
     // Async support.
@@ -109,6 +118,8 @@ final class BLEManager: NSObject, @unchecked Sendable {
         connectedPeripheral = nil
         spatialCharacteristic = nil
         macCharacteristic = nil
+        locationCharacteristic = nil
+        wearableLocation = nil
         connectionState = .disconnected
         rssi = 0
     }
@@ -244,6 +255,24 @@ final class BLEManager: NSObject, @unchecked Sendable {
         return (parts[4] + parts[5]).uppercased()
     }
 
+    /// Parse the 9-byte location payload pushed by the wearable:
+    /// [valid(u8), lat(float32 LE), lon(float32 LE)].
+    private func handleLocationPayload(_ data: Data) {
+        guard data.count == 9 else { return }
+        let valid = data[0] != 0
+        guard valid else {
+            wearableLocation = nil
+            return
+        }
+        let lat: Float = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 1, as: Float.self) }
+        let lon: Float = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 5, as: Float.self) }
+        wearableLocation = WearableLocation(
+            latitude: Double(lat),
+            longitude: Double(lon),
+            receivedAt: Date()
+        )
+    }
+
     private func startRSSIUpdates() {
         rssiTimer?.invalidate()
         rssiTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
@@ -325,6 +354,8 @@ extension BLEManager: CBCentralManagerDelegate {
             self.macCharacteristic = nil
             self.ownerWriteCharacteristic = nil
             self.ownerAuthCharacteristic = nil
+            self.locationCharacteristic = nil
+            self.wearableLocation = nil
             self.connectionState = .disconnected
             self.rssi = 0
             self.rssiTimer?.invalidate()
@@ -352,6 +383,7 @@ extension BLEManager: CBPeripheralDelegate {
                     macReadCharacteristicUUID,
                     ownerWriteCharacteristicUUID,
                     ownerAuthCharacteristicUUID,
+                    locationCharacteristicUUID,
                 ], for: service
             )
         }
@@ -384,6 +416,14 @@ extension BLEManager: CBPeripheralDelegate {
                 DispatchQueue.main.async { self.ownerWriteCharacteristic = characteristic }
             } else if characteristic.uuid == ownerAuthCharacteristicUUID {
                 DispatchQueue.main.async { self.ownerAuthCharacteristic = characteristic }
+            } else if characteristic.uuid == locationCharacteristicUUID {
+                DispatchQueue.main.async { self.locationCharacteristic = characteristic }
+                if characteristic.properties.contains(.notify) {
+                    peripheral.setNotifyValue(true, for: characteristic)
+                }
+                if characteristic.properties.contains(.read) {
+                    peripheral.readValue(for: characteristic)
+                }
             }
         }
     }
@@ -429,6 +469,10 @@ extension BLEManager: CBPeripheralDelegate {
                 return
             }
             guard let data = characteristic.value else { return }
+            if characteristic.uuid == locationCharacteristicUUID {
+                self.handleLocationPayload(data)
+                return
+            }
             self.lastReceivedData = data
             self.lastReceivedString = String(data: data, encoding: .utf8)
         }

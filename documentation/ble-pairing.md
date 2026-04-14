@@ -12,6 +12,7 @@ Firmware: `arduino/10_wearable_persistent_pairing/10_wearable_persistent_pairing
 | MAC characteristic | `12345678-1234-5678-1234-56781234abce` | READ | 17-byte ASCII MAC. Gated: returns empty when the wearable is paired and the current central has not authed. |
 | Owner-write | `12345678-1234-5678-1234-56781234abcf` | WRITE | Accepted ONLY while the wearable is in pairing mode. iOS writes the Supabase `user_id` (UUID string, UTF-8). Firmware stores it in NVS and exits pairing mode. |
 | Owner-auth | `12345678-1234-5678-1234-56781234abd0` | WRITE | Required on every reconnect once paired. iOS writes the same `user_id`; firmware compares to NVS and disconnects on mismatch. Centrals that don't write within 3 s of connecting are also disconnected. |
+| Location | `12345678-1234-5678-1234-56781234abd1` | READ, NOTIFY | 9-byte GPS payload pushed by the wearable every 15 s. Layout: `valid(u8) | lat(float32 LE) | lon(float32 LE)`. `valid=0` means no fix yet — lat/lon should be ignored. Added in firmware `12_wearable_location_ble`. |
 
 ## Persistent State (NVS)
 
