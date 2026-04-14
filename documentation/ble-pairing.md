@@ -2,14 +2,25 @@
 
 The Spatial Wearable exposes its STA MAC address over a read-only GATT characteristic so the iOS companion app can link a specific physical wearable to the current user during onboarding.
 
-Firmware: `arduino/09_wearable_pairing/09_wearable_pairing.ino` (forked from `08_full_wearable`).
+Firmware: `arduino/10_wearable_persistent_pairing/10_wearable_persistent_pairing.ino` (forked from `09_wearable_pairing`).
 
 ## GATT Layout
 
 | Item | UUID | Properties | Value |
 |---|---|---|---|
 | Service | `12345678-1234-5678-1234-56781234abcd` | -- | Primary service; also advertised |
-| MAC characteristic | `12345678-1234-5678-1234-56781234abce` | READ | 17-byte ASCII MAC string |
+| MAC characteristic | `12345678-1234-5678-1234-56781234abce` | READ | 17-byte ASCII MAC. Gated: returns empty when the wearable is paired and the current central has not authed. |
+| Owner-write | `12345678-1234-5678-1234-56781234abcf` | WRITE | Accepted ONLY while the wearable is in pairing mode. iOS writes the Supabase `user_id` (UUID string, UTF-8). Firmware stores it in NVS and exits pairing mode. |
+| Owner-auth | `12345678-1234-5678-1234-56781234abd0` | WRITE | Required on every reconnect once paired. iOS writes the same `user_id`; firmware compares to NVS and disconnects on mismatch. Centrals that don't write within 3 s of connecting are also disconnected. |
+
+## Persistent State (NVS)
+
+Firmware 10 uses the `Preferences` namespace `sw-pair` with two keys:
+
+- `paired` (bool) — true once an owner is saved.
+- `owner` (string) — Supabase `user_id` UUID of the linked account.
+
+Fresh devices boot with `paired=false` and therefore start in pairing mode. Holding the BOOT button (GPIO0) for 5 seconds calls `prefs.clear()` and re-enters pairing mode, forgetting the prior owner. After a successful `owner-write`, the wearable boots directly into normal proximity mode on subsequent power-cycles.
 
 The service UUID is the same one already used by firmware 08 for peer discovery, so the existing advertising path is reused unchanged. Only the new MAC characteristic is added.
 

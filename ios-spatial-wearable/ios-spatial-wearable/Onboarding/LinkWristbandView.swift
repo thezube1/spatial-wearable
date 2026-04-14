@@ -41,8 +41,8 @@ struct LinkWristbandView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 14) {
-                    Text("1. Hold the side button for 5 seconds.")
-                    Text("2. Release when the logo begins to fill.")
+                    Text("1. Hold the BOOT button on the wristband for 5 seconds.")
+                    Text("2. Release when the screen shows PAIRING MODE.")
                 }
                 .font(OnboardingStyle.font(15))
                 .foregroundStyle(.white)
@@ -111,6 +111,15 @@ struct LinkWristbandView: View {
         do {
             let mac = try await ble.readMAC()
             _ = try await APIClient.shared.linkDevice(mac: mac)
+
+            // Commit the owner token on the ESP so it only talks to this user.
+            guard let uid = await SupabaseService.shared.currentUserId() else {
+                throw NSError(domain: "Pairing", code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "No Supabase session"])
+            }
+            statusText = "Saving owner…"
+            try await ble.writeOwner(userId: uid)
+
             coordinator.linkedDeviceMAC = mac
             statusText = "Linked"
             try? await Task.sleep(for: .milliseconds(400))

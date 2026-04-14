@@ -1,10 +1,12 @@
 import CoreBluetooth
 import SwiftUI
 
-// UUIDs must match the Arduino firmware (arduino/09_wearable_pairing).
+// UUIDs must match the Arduino firmware (arduino/10_wearable_persistent_pairing).
 let spatialServiceUUID = CBUUID(string: "12345678-1234-5678-1234-56781234abcd")
 let spatialCharacteristicUUID = CBUUID(string: "beb5483e-36e1-4688-b7f5-ea07361b26a8")
 let macReadCharacteristicUUID = CBUUID(string: "12345678-1234-5678-1234-56781234abce")
+let ownerWriteCharacteristicUUID = CBUUID(string: "12345678-1234-5678-1234-56781234abcf")
+let ownerAuthCharacteristicUUID  = CBUUID(string: "12345678-1234-5678-1234-56781234abd0")
 
 struct DiscoveredDevice: Identifiable {
     let id: UUID
@@ -54,10 +56,17 @@ final class BLEManager: NSObject, @unchecked Sendable {
     private var centralManager: CBCentralManager!
     private var spatialCharacteristic: CBCharacteristic?
     private var macCharacteristic: CBCharacteristic?
+    private var ownerWriteCharacteristic: CBCharacteristic?
+    private var ownerAuthCharacteristic: CBCharacteristic?
     private var rssiTimer: Timer?
 
-    // Async readMAC support.
+    // Async support.
     private var pendingMACContinuation: CheckedContinuation<String, Error>?
+    private var pendingWriteContinuation: CheckedContinuation<Void, Error>?
+    private var pendingWriteCharUUID: CBUUID?
+    private var pendingServicesContinuation: CheckedContinuation<Void, Error>?
+    private var reconnectTargetMAC: String?
+    private var reconnectContinuation: CheckedContinuation<Void, Error>?
 
     override init() {
         super.init()
@@ -125,6 +134,83 @@ final class BLEManager: NSObject, @unchecked Sendable {
         }
     }
 
+    /// Write the Supabase user_id to the owner-write characteristic during pairing.
+    /// Firmware stores it in NVS and exits pairing mode.
+    func writeOwner(userId: String) async throws {
+        try await writeString(userId, toCharacteristic: ownerWriteCharacteristicUUID)
+    }
+
+    /// Prove ownership on a reconnect by writing the same user_id the wearable
+    /// has stored. Firmware disconnects us if the value doesn't match.
+    func authenticate(userId: String) async throws {
+        try await writeString(userId, toCharacteristic: ownerAuthCharacteristicUUID)
+    }
+
+    private func writeString(_ value: String, toCharacteristic uuid: CBUUID) async throws {
+        guard let peripheral = connectedPeripheral else {
+            throw NSError(domain: "BLEManager", code: 10,
+                          userInfo: [NSLocalizedDescriptionKey: "Not connected"])
+        }
+        let char: CBCharacteristic?
+        if uuid == ownerWriteCharacteristicUUID { char = ownerWriteCharacteristic }
+        else if uuid == ownerAuthCharacteristicUUID { char = ownerAuthCharacteristic }
+        else { char = nil }
+        guard let characteristic = char else {
+            throw NSError(domain: "BLEManager", code: 11,
+                          userInfo: [NSLocalizedDescriptionKey: "Characteristic \(uuid) not discovered"])
+        }
+        guard let data = value.data(using: .utf8) else {
+            throw NSError(domain: "BLEManager", code: 12,
+                          userInfo: [NSLocalizedDescriptionKey: "Non-UTF8 value"])
+        }
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            self.pendingWriteContinuation = cont
+            self.pendingWriteCharUUID = uuid
+            peripheral.writeValue(data, for: characteristic, type: .withResponse)
+        }
+    }
+
+    /// Rediscover and reconnect to the wristband whose MAC matches `mac`.
+    /// Match is performed on the advertised local name `SW-XXXX` where XXXX is
+    /// the last 4 MAC hex digits — the firmware derives the name that way.
+    func reconnect(toMAC mac: String) async throws {
+        let suffix = Self.nameSuffix(fromMAC: mac)
+        let expectedName = "SW-\(suffix)"
+        reconnectTargetMAC = expectedName
+
+        guard centralManager.state == .poweredOn else {
+            throw NSError(domain: "BLEManager", code: 20,
+                          userInfo: [NSLocalizedDescriptionKey: "Bluetooth not powered on"])
+        }
+
+        discoveredDevices.removeAll()
+        connectionState = .scanning
+        isScanning = true
+        centralManager.scanForPeripherals(
+            withServices: [spatialServiceUUID],
+            options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
+        )
+
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            self.reconnectContinuation = cont
+            DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in
+                guard let self, let c = self.reconnectContinuation else { return }
+                self.reconnectContinuation = nil
+                self.reconnectTargetMAC = nil
+                self.stopScanning()
+                c.resume(throwing: NSError(domain: "BLEManager", code: 21,
+                    userInfo: [NSLocalizedDescriptionKey: "Reconnect timed out"]))
+            }
+        }
+    }
+
+    private static func nameSuffix(fromMAC mac: String) -> String {
+        // mac = "AA:BB:CC:DD:EE:FF" → last two bytes concatenated "EEFF".
+        let parts = mac.split(separator: ":")
+        guard parts.count == 6 else { return "" }
+        return (parts[4] + parts[5]).uppercased()
+    }
+
     private func startRSSIUpdates() {
         rssiTimer?.invalidate()
         rssiTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
@@ -163,6 +249,14 @@ extension BLEManager: CBCentralManagerDelegate {
                                      name: name, rssi: RSSI.intValue)
                 )
             }
+
+            // Reconnect path: match by advertised local name and auto-connect.
+            if let target = self.reconnectTargetMAC, name == target {
+                self.reconnectTargetMAC = nil
+                self.stopScanning()
+                self.connectionState = .connecting
+                self.centralManager.connect(peripheral, options: nil)
+            }
         }
     }
 
@@ -173,6 +267,11 @@ extension BLEManager: CBCentralManagerDelegate {
             peripheral.delegate = self
             peripheral.discoverServices([spatialServiceUUID])
             self.startRSSIUpdates()
+
+            if let cont = self.reconnectContinuation {
+                self.reconnectContinuation = nil
+                cont.resume()
+            }
         }
     }
 
@@ -191,10 +290,19 @@ extension BLEManager: CBCentralManagerDelegate {
             self.connectedPeripheral = nil
             self.spatialCharacteristic = nil
             self.macCharacteristic = nil
+            self.ownerWriteCharacteristic = nil
+            self.ownerAuthCharacteristic = nil
             self.connectionState = .disconnected
             self.rssi = 0
             self.rssiTimer?.invalidate()
             self.rssiTimer = nil
+
+            if let cont = self.pendingWriteContinuation {
+                self.pendingWriteContinuation = nil
+                self.pendingWriteCharUUID = nil
+                cont.resume(throwing: error ?? NSError(domain: "BLE", code: 13,
+                    userInfo: [NSLocalizedDescriptionKey: "Disconnected before write completed"]))
+            }
         }
     }
 }
@@ -206,7 +314,12 @@ extension BLEManager: CBPeripheralDelegate {
         guard let services = peripheral.services else { return }
         for service in services where service.uuid == spatialServiceUUID {
             peripheral.discoverCharacteristics(
-                [spatialCharacteristicUUID, macReadCharacteristicUUID], for: service
+                [
+                    spatialCharacteristicUUID,
+                    macReadCharacteristicUUID,
+                    ownerWriteCharacteristicUUID,
+                    ownerAuthCharacteristicUUID,
+                ], for: service
             )
         }
     }
@@ -234,6 +347,29 @@ extension BLEManager: CBPeripheralDelegate {
                         peripheral.readValue(for: characteristic)
                     }
                 }
+            } else if characteristic.uuid == ownerWriteCharacteristicUUID {
+                DispatchQueue.main.async { self.ownerWriteCharacteristic = characteristic }
+            } else if characteristic.uuid == ownerAuthCharacteristicUUID {
+                DispatchQueue.main.async { self.ownerAuthCharacteristic = characteristic }
+            }
+        }
+    }
+
+    nonisolated func peripheral(
+        _ peripheral: CBPeripheral,
+        didWriteValueFor characteristic: CBCharacteristic,
+        error: Error?
+    ) {
+        DispatchQueue.main.async {
+            guard let cont = self.pendingWriteContinuation,
+                  let pendingUUID = self.pendingWriteCharUUID,
+                  characteristic.uuid == pendingUUID else { return }
+            self.pendingWriteContinuation = nil
+            self.pendingWriteCharUUID = nil
+            if let err = error {
+                cont.resume(throwing: err)
+            } else {
+                cont.resume()
             }
         }
     }

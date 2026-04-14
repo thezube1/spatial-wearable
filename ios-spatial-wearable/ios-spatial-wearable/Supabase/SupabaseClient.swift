@@ -4,6 +4,7 @@ import Foundation
 // Products used: `Supabase` (umbrella). This file assumes that package is
 // linked; if it is missing the build will surface the unresolved import.
 import Supabase
+import Auth
 
 enum SupabaseConfigError: Error { case missingKey(String) }
 
@@ -21,7 +22,15 @@ final class SupabaseService {
         else {
             fatalError("Missing SUPABASE_URL or SUPABASE_ANON_KEY in Info.plist")
         }
-        self.client = SupabaseClient(supabaseURL: url, supabaseKey: anonKey)
+        self.client = SupabaseClient(
+            supabaseURL: url,
+            supabaseKey: anonKey,
+            options: SupabaseClientOptions(
+                auth: SupabaseClientOptions.AuthOptions(
+                    emitLocalSessionAsInitialSession: true
+                )
+            )
+        )
     }
 
     /// Returns the current access token (JWT) if a session exists.
@@ -29,6 +38,16 @@ final class SupabaseService {
         do {
             let session = try await client.auth.session
             return session.accessToken
+        } catch {
+            return nil
+        }
+    }
+
+    /// Returns the Supabase user_id (UUID string) of the current session, if any.
+    func currentUserId() async -> String? {
+        do {
+            let session = try await client.auth.session
+            return session.user.id.uuidString.lowercased()
         } catch {
             return nil
         }

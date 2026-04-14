@@ -38,6 +38,21 @@ struct DashboardView: View {
         }
         .task {
             device = try? await APIClient.shared.getMyDevice()
+            await autoReconnect()
+        }
+    }
+
+    /// On dashboard appear, if the backend knows a linked MAC and we're not
+    /// already connected, scan for that wristband and re-auth with our user_id.
+    private func autoReconnect() async {
+        guard ble.connectionState != .connected else { return }
+        guard let mac = device?.mac_address ?? coordinator.linkedDeviceMAC else { return }
+        guard let uid = await SupabaseService.shared.currentUserId() else { return }
+        do {
+            try await ble.reconnect(toMAC: mac)
+            try await ble.authenticate(userId: uid)
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 

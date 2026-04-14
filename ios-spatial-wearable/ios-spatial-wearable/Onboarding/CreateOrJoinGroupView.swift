@@ -9,7 +9,8 @@ struct CreateOrJoinGroupView: View {
     @State private var searchTask: Task<Void, Never>?
 
     var body: some View {
-        ZStack {
+        @Bindable var coordinator = coordinator
+        return ZStack {
             OnboardingBackground()
 
             VStack(spacing: 18) {

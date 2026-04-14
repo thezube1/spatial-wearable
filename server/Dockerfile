@@ -15,9 +15,10 @@ RUN pip install -r requirements.txt gunicorn
 
 COPY . .
 
-EXPOSE 5000
+ENV PORT=8080
+EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
-    CMD curl -f http://localhost:5000/health || exit 1
+    CMD curl -f http://localhost:${PORT}/health || exit 1
 
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--access-logfile", "-", "app:app"]
+CMD exec gunicorn --bind 0.0.0.0:${PORT} --workers 2 --threads 8 --timeout 0 --access-logfile - app:app

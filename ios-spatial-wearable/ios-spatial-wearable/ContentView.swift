@@ -1,4 +1,5 @@
 import SwiftUI
+import Auth
 
 struct ContentView: View {
     @Environment(BLEManager.self) private var bleManager

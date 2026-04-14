@@ -3,10 +3,12 @@ services:
     build: ./server
     container_name: spatial-wearable-api
     ports:
-      - "5050:5000"
+      - "5050:8080"
+    environment:
+      - PORT=8080
     env_file:
       - ./server/.env
     volumes:
       - ./server:/app
-    command: flask --app app run --host=0.0.0.0 --port=5000 --debug
+    command: flask --app app run --host=0.0.0.0 --port=8080 --debug
     restart: unless-stopped

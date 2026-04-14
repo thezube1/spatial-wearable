@@ -1,0 +1,9 @@
+// Copy this file to Config.xcconfig and fill in the values.
+// Config.xcconfig is gitignored; do not commit real secrets.
+//
+// Note: xcconfig treats "//" as a comment. To embed a literal "//" in a
+// value (e.g. in URLs), split it with $() as shown below.
+
+SUPABASE_URL = https:/$()/your-project.supabase.co
+SUPABASE_ANON_KEY = your-anon-key-here
+FLASK_API_BASE_URL = http:/$()/localhost:5050

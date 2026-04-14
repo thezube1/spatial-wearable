@@ -15,7 +15,8 @@ struct GroupSetupView: View {
     }
 
     var body: some View {
-        ZStack {
+        @Bindable var coordinator = coordinator
+        return ZStack {
             OnboardingBackground()
 
             VStack(spacing: 18) {

@@ -459,9 +459,9 @@ Supabase (Postgres + Auth)
 
 ### BLE Pairing Protocol
 
-The wearable exposes a read-only MAC characteristic; the iOS app reads it and POSTs to `/devices/link` to bind the device to the authenticated user. Full protocol (UUIDs, value format, sequence, error handling): see `documentation/ble-pairing.md`.
+The wearable exposes a read-only MAC characteristic; the iOS app reads it and POSTs to `/devices/link` to bind the device to the authenticated user. Firmware 10 adds persistent pairing in NVS (Preferences namespace `sw-pair`), a 5-second hold on the BOOT button (GPIO0) to forget the owner and re-enter pairing mode, an owner-write characteristic (`…abcf`) for iOS to commit the Supabase `user_id` during linking, and an owner-auth characteristic (`…abd0`) that iOS must write on every reconnect to be served by the wearable. Full protocol (UUIDs, value format, sequence, error handling): see `documentation/ble-pairing.md`.
 
-Firmware reference: `arduino/09_wearable_pairing/09_wearable_pairing.ino`.
+Firmware reference: `arduino/10_wearable_persistent_pairing/10_wearable_persistent_pairing.ino`.
 
 ### API Base URL Convention
 
@@ -478,7 +478,7 @@ FLASK_API_BASE_URL
 
 ### Firmware Numbering Convention
 
-Arduino sketches live under `arduino/NN_name/NN_name.ino` where `NN` is a zero-padded two-digit sequence number and `name` is a short snake_case label. Example: `08_full_wearable`, `09_wearable_pairing`.
+Arduino sketches live under `arduino/NN_name/NN_name.ino` where `NN` is a zero-padded two-digit sequence number and `name` is a short snake_case label. Example: `09_wearable_pairing`, `10_wearable_persistent_pairing`.
 
 - **Latest wins**: The highest-numbered sketch is always the current production build. Older sketches are kept intact for diff clarity and never edited after a new number is cut.
 - **Forking rule**: To add a feature, copy the previous sketch to a new numbered directory (do not modify the previous one). Commit message should note the fork, e.g. "fork 08 -> 09: add MAC pairing char".

@@ -24,8 +24,8 @@ final class APIClient {
 
     private init() {
         let info = Bundle.main.infoDictionary ?? [:]
-        let raw = (info["FlaskAPIBaseURL"] as? String) ?? "http://localhost:5050"
-        self.baseURL = URL(string: raw) ?? URL(string: "http://localhost:5050")!
+        let raw = (info["FlaskAPIBaseURL"] as? String) ?? "https://spatial-wearable-690270867902.us-west1.run.app"
+        self.baseURL = URL(string: raw) ?? URL(string: "https://spatial-wearable-690270867902.us-west1.run.app")!
         self.session = .shared
     }
 

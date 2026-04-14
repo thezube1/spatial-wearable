@@ -1,0 +1,14 @@
+# iOS / Xcode local config (contains secrets)
+ios-spatial-wearable/Config.xcconfig
+
+# Xcode
+**/xcuserdata/
+**/*.xcworkspace/xcuserdata/
+**/DerivedData/
+
+# macOS
+.DS_Store
+
+# Env files
+.env
+.env.local

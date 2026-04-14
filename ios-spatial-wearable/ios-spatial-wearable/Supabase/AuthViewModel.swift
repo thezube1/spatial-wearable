@@ -21,7 +21,9 @@ final class AuthViewModel {
 
     private func observeAuth() async {
         for await change in supabase.auth.authStateChanges {
-            await MainActor.run { self.currentSession = change.session }
+            let session = change.session
+            let valid = session.map { !$0.isExpired } ?? false
+            await MainActor.run { self.currentSession = valid ? session : nil }
         }
     }
 

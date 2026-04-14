@@ -6,13 +6,38 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		4B572DDD2F8DE16F002AACE4 /* Auth in Frameworks */ = {isa = PBXBuildFile; productRef = 4B572DDC2F8DE16F002AACE4 /* Auth */; };
+		4B572DDF2F8DE16F002AACE4 /* Functions in Frameworks */ = {isa = PBXBuildFile; productRef = 4B572DDE2F8DE16F002AACE4 /* Functions */; };
+		4B572DE12F8DE16F002AACE4 /* PostgREST in Frameworks */ = {isa = PBXBuildFile; productRef = 4B572DE02F8DE16F002AACE4 /* PostgREST */; };
+		4B572DE32F8DE16F002AACE4 /* Realtime in Frameworks */ = {isa = PBXBuildFile; productRef = 4B572DE22F8DE16F002AACE4 /* Realtime */; };
+		4B572DE52F8DE16F002AACE4 /* Storage in Frameworks */ = {isa = PBXBuildFile; productRef = 4B572DE42F8DE16F002AACE4 /* Storage */; };
+		4B572DE72F8DE16F002AACE4 /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = 4B572DE62F8DE16F002AACE4 /* Supabase */; };
+		4B572DF12F8DE403002AACE4 /* Config.xcconfig in Resources */ = {isa = PBXBuildFile; fileRef = 4B572DF02F8DE403002AACE4 /* Config.xcconfig */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		4B3CB5AA2F85D5770071C3DC /* ios-spatial-wearable.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "ios-spatial-wearable.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		4B572DF02F8DE403002AACE4 /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		4B572DD52F8DDED6002AACE4 /* Exceptions for "ios-spatial-wearable" folder in "ios-spatial-wearable" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				DashboardView.swift,
+				Info.plist,
+			);
+			target = 4B3CB5A92F85D5770071C3DC /* ios-spatial-wearable */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		4B3CB5AC2F85D5770071C3DC /* ios-spatial-wearable */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				4B572DD52F8DDED6002AACE4 /* Exceptions for "ios-spatial-wearable" folder in "ios-spatial-wearable" target */,
+			);
 			path = "ios-spatial-wearable";
 			sourceTree = "<group>";
 		};
@@ -23,6 +48,12 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4B572DE12F8DE16F002AACE4 /* PostgREST in Frameworks */,
+				4B572DDF2F8DE16F002AACE4 /* Functions in Frameworks */,
+				4B572DE72F8DE16F002AACE4 /* Supabase in Frameworks */,
+				4B572DDD2F8DE16F002AACE4 /* Auth in Frameworks */,
+				4B572DE52F8DE16F002AACE4 /* Storage in Frameworks */,
+				4B572DE32F8DE16F002AACE4 /* Realtime in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -33,7 +64,9 @@
 			isa = PBXGroup;
 			children = (
 				4B3CB5AC2F85D5770071C3DC /* ios-spatial-wearable */,
+				4B572DDB2F8DE16F002AACE4 /* Frameworks */,
 				4B3CB5AB2F85D5770071C3DC /* Products */,
+				4B572DF02F8DE403002AACE4 /* Config.xcconfig */,
 			);
 			sourceTree = "<group>";
 		};
@@ -43,6 +76,13 @@
 				4B3CB5AA2F85D5770071C3DC /* ios-spatial-wearable.app */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		4B572DDB2F8DE16F002AACE4 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -59,12 +99,24 @@
 			buildRules = (
 			);
 			dependencies = (
+				4B572DE92F8DE190002AACE4 /* PBXTargetDependency */,
+				4B572DEB2F8DE190002AACE4 /* PBXTargetDependency */,
+				4B572DED2F8DE190002AACE4 /* PBXTargetDependency */,
+				4B572DEF2F8DE190002AACE4 /* PBXTargetDependency */,
+				4B572DDA2F8DE0BD002AACE4 /* PBXTargetDependency */,
+				4B572DD82F8DE004002AACE4 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				4B3CB5AC2F85D5770071C3DC /* ios-spatial-wearable */,
 			);
 			name = "ios-spatial-wearable";
 			packageProductDependencies = (
+				4B572DDC2F8DE16F002AACE4 /* Auth */,
+				4B572DDE2F8DE16F002AACE4 /* Functions */,
+				4B572DE02F8DE16F002AACE4 /* PostgREST */,
+				4B572DE22F8DE16F002AACE4 /* Realtime */,
+				4B572DE42F8DE16F002AACE4 /* Storage */,
+				4B572DE62F8DE16F002AACE4 /* Supabase */,
 			);
 			productName = "ios-spatial-wearable";
 			productReference = 4B3CB5AA2F85D5770071C3DC /* ios-spatial-wearable.app */;
@@ -94,6 +146,9 @@
 			);
 			mainGroup = 4B3CB5A12F85D5770071C3DC;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				4B572DD62F8DDF67002AACE4 /* XCRemoteSwiftPackageReference "supabase-swift" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 4B3CB5AB2F85D5770071C3DC /* Products */;
 			projectDirPath = "";
@@ -109,6 +164,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4B572DF12F8DE403002AACE4 /* Config.xcconfig in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -124,9 +180,37 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		4B572DD82F8DE004002AACE4 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			productRef = 4B572DD72F8DE004002AACE4 /* Supabase */;
+		};
+		4B572DDA2F8DE0BD002AACE4 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			productRef = 4B572DD92F8DE0BD002AACE4 /* Auth */;
+		};
+		4B572DE92F8DE190002AACE4 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			productRef = 4B572DE82F8DE190002AACE4 /* Functions */;
+		};
+		4B572DEB2F8DE190002AACE4 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			productRef = 4B572DEA2F8DE190002AACE4 /* PostgREST */;
+		};
+		4B572DED2F8DE190002AACE4 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			productRef = 4B572DEC2F8DE190002AACE4 /* Realtime */;
+		};
+		4B572DEF2F8DE190002AACE4 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			productRef = 4B572DEE2F8DE190002AACE4 /* Storage */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
 		4B3CB5B32F85D5780071C3DC /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 4B572DF02F8DE403002AACE4 /* Config.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -191,6 +275,7 @@
 		};
 		4B3CB5B42F85D5780071C3DC /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 4B572DF02F8DE403002AACE4 /* Config.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -248,6 +333,7 @@
 		};
 		4B3CB5B62F85D5780071C3DC /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 4B572DF02F8DE403002AACE4 /* Config.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -256,6 +342,7 @@
 				DEVELOPMENT_TEAM = K74GLH832Z;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "ios-spatial-wearable/Info.plist";
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Spatial Wearable needs Bluetooth to connect to your ESP32 device and receive sensor data.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -281,6 +368,7 @@
 		};
 		4B3CB5B72F85D5780071C3DC /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 4B572DF02F8DE403002AACE4 /* Config.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -289,6 +377,7 @@
 				DEVELOPMENT_TEAM = K74GLH832Z;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "ios-spatial-wearable/Info.plist";
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Spatial Wearable needs Bluetooth to connect to your ESP32 device and receive sensor data.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -334,6 +423,80 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		4B572DD62F8DDF67002AACE4 /* XCRemoteSwiftPackageReference "supabase-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/supabase/supabase-swift";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.5.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		4B572DD72F8DE004002AACE4 /* Supabase */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4B572DD62F8DDF67002AACE4 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Supabase;
+		};
+		4B572DD92F8DE0BD002AACE4 /* Auth */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4B572DD62F8DDF67002AACE4 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Auth;
+		};
+		4B572DDC2F8DE16F002AACE4 /* Auth */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4B572DD62F8DDF67002AACE4 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Auth;
+		};
+		4B572DDE2F8DE16F002AACE4 /* Functions */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4B572DD62F8DDF67002AACE4 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Functions;
+		};
+		4B572DE02F8DE16F002AACE4 /* PostgREST */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4B572DD62F8DDF67002AACE4 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = PostgREST;
+		};
+		4B572DE22F8DE16F002AACE4 /* Realtime */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4B572DD62F8DDF67002AACE4 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Realtime;
+		};
+		4B572DE42F8DE16F002AACE4 /* Storage */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4B572DD62F8DDF67002AACE4 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Storage;
+		};
+		4B572DE62F8DE16F002AACE4 /* Supabase */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4B572DD62F8DDF67002AACE4 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Supabase;
+		};
+		4B572DE82F8DE190002AACE4 /* Functions */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4B572DD62F8DDF67002AACE4 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Functions;
+		};
+		4B572DEA2F8DE190002AACE4 /* PostgREST */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4B572DD62F8DDF67002AACE4 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = PostgREST;
+		};
+		4B572DEC2F8DE190002AACE4 /* Realtime */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4B572DD62F8DDF67002AACE4 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Realtime;
+		};
+		4B572DEE2F8DE190002AACE4 /* Storage */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4B572DD62F8DDF67002AACE4 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Storage;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 4B3CB5A22F85D5770071C3DC /* Project object */;
 }
