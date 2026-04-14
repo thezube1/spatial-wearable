@@ -16,7 +16,15 @@ struct LocationTabView: View {
                     placeholder
                 }
             }
-            .navigationTitle("Location")
+            .toolbar(.hidden, for: .navigationBar)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                Text("Location")
+                    .font(.largeTitle.bold())
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 8)
+                    .background(.bar)
+            }
         }
     }
 

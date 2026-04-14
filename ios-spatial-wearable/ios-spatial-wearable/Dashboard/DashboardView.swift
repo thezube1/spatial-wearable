@@ -65,6 +65,9 @@ struct DashboardView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
+                    Text("Dashboard")
+                        .font(.largeTitle.bold())
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     eventCard
                     groupCard
 
@@ -85,7 +88,7 @@ struct DashboardView: View {
                 .padding(20)
             }
             .background(Color(.systemGroupedBackground))
-            .navigationTitle("Dashboard")
+            .toolbar(.hidden, for: .navigationBar)
         }
     }
 

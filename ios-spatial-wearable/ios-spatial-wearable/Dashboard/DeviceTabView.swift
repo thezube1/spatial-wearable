@@ -19,6 +19,9 @@ struct DeviceTabView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
+                    Text("Device")
+                        .font(.largeTitle.bold())
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     if mac != nil {
                         infoCard
                         actionCard
@@ -36,7 +39,7 @@ struct DeviceTabView: View {
                 .padding(20)
             }
             .background(Color(.systemGroupedBackground))
-            .navigationTitle("Device")
+            .toolbar(.hidden, for: .navigationBar)
         }
         .sheet(isPresented: $showPairSheet) {
             NavigationStack {

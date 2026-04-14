@@ -21,20 +21,12 @@ struct GroupTabView: View {
 
     var body: some View {
         NavigationStack {
-            Group {
-                if isLoading {
-                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if let group {
-                    groupDetail(group)
-                } else {
-                    noGroupView
-                }
-            }
-            .navigationTitle("Group")
-            .background(Color(.systemGroupedBackground))
-            .toolbar {
-                if group != nil, canManage {
-                    ToolbarItem(placement: .topBarTrailing) {
+            VStack(spacing: 0) {
+                HStack {
+                    Text("Group")
+                        .font(.largeTitle.bold())
+                    Spacer()
+                    if group != nil, canManage {
                         Menu {
                             Button { showRename = true } label: { Label("Rename", systemImage: "pencil") }
                             Button { showAddMember = true } label: { Label("Add member", systemImage: "person.badge.plus") }
@@ -44,11 +36,25 @@ struct GroupTabView: View {
                                 }
                             }
                         } label: {
-                            Image(systemName: "ellipsis.circle")
+                            Image(systemName: "ellipsis.circle").font(.title2)
                         }
                     }
                 }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 8)
+
+                Group {
+                    if isLoading {
+                        ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if let group {
+                        groupDetail(group)
+                    } else {
+                        noGroupView
+                    }
+                }
             }
+            .background(Color(.systemGroupedBackground))
+            .toolbar(.hidden, for: .navigationBar)
         }
         .task { await load() }
         .sheet(isPresented: $showRename) {
