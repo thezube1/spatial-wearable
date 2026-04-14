@@ -10,9 +10,27 @@ final class AuthViewModel {
 
     private let supabase = SupabaseService.shared.client
 
+    // UserDefaults flag — cleared when the app is deleted, so we can detect
+    // fresh installs and flush any Keychain-persisted Supabase session.
+    private static let firstLaunchKey = "hasLaunchedBefore"
+
     init() {
-        Task { await refreshSession() }
+        Task {
+            await clearStaleSessionOnFreshInstall()
+            await refreshSession()
+        }
         Task { await observeAuth() }
+    }
+
+    /// Supabase stores sessions in the iOS Keychain, which survives app
+    /// deletion. On a first launch after (re)install we sign out so the user
+    /// hits WelcomeView instead of being silently logged in.
+    private func clearStaleSessionOnFreshInstall() async {
+        let defaults = UserDefaults.standard
+        if defaults.bool(forKey: Self.firstLaunchKey) { return }
+        try? await supabase.auth.signOut()
+        await MainActor.run { self.currentSession = nil }
+        defaults.set(true, forKey: Self.firstLaunchKey)
     }
 
     func refreshSession() async {
