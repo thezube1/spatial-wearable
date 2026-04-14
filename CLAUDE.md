@@ -421,3 +421,66 @@ Power:
 ```
 
 **Note:** If driving multiple GC9A01 displays via the PCA9548A I2C mux, that won't work directly since the displays use SPI, not I2C. For multiple SPI displays, either use separate CS lines for each display, or use an SPI multiplexer. The PCA9548A is for multiplexing I2C devices (e.g., multiple I2C sensors sharing the same address).
+
+---
+
+## App Architecture
+
+The Spatial Wearable product is a three-tier stack: an iOS app, a Flask API intermediary, and Supabase (Postgres + Auth) as the system of record. The wearable firmware is a fourth peer that the iOS app talks to directly over BLE during onboarding.
+
+### Three-Tier Stack
+
+```
+iOS (SwiftUI + supabase-swift)
+  |-- Auth: Supabase directly (email/password via supabase-swift)
+  |-- Data: Flask API with Bearer <supabase JWT>
+  `-- Device pairing: CoreBluetooth to wearable firmware
+        |
+        v
+Flask API (Python 3.11)
+  |-- Verifies Supabase JWTs (SUPABASE_JWT_SECRET)
+  |-- Uses supabase-py with service-role key for privileged writes
+  `-- Routes: /me, /devices/*, /events, /users/search, /groups/*
+        |
+        v
+Supabase (Postgres + Auth)
+  |-- auth.users (managed)
+  |-- public.users (mirror, populated by trigger on auth.users insert)
+  |-- public.devices, public.events, public.groups, public.group_members
+  `-- RLS enabled on all public tables
+```
+
+### Where Auth Lives
+
+- **Identity and session tokens**: Supabase Auth. The iOS app calls `supabase.auth.signUp` / `signInWithPassword` directly and holds the session via supabase-swift.
+- **Authorization for API calls**: Every request to the Flask API carries `Authorization: Bearer <supabase_access_token>`. Flask verifies the JWT locally with the Supabase JWT secret (no round-trip to Supabase) and attaches `g.user_id`.
+- **Privileged DB writes**: Flask uses the Supabase service-role key, so RLS is bypassed server-side; enforcement is via the `@require_auth` decorator plus explicit ownership checks in each route.
+- **No auth state in the wearable**: The firmware is identified only by its MAC. Binding a MAC to a user happens in `public.devices.linked_user_id`, set by `POST /devices/link`.
+
+### BLE Pairing Protocol
+
+The wearable exposes a read-only MAC characteristic; the iOS app reads it and POSTs to `/devices/link` to bind the device to the authenticated user. Full protocol (UUIDs, value format, sequence, error handling): see `documentation/ble-pairing.md`.
+
+Firmware reference: `arduino/09_wearable_pairing/09_wearable_pairing.ino`.
+
+### API Base URL Convention
+
+Both the iOS app and any tooling that calls the Flask API read the base URL from the environment variable:
+
+```
+FLASK_API_BASE_URL
+```
+
+- **Server-side (Flask, tests, scripts)**: read from `.env` / process env; no hard-coded defaults in committed code.
+- **iOS**: the value is injected at build time via an xcconfig and exposed in `Info.plist` as `FLASK_API_BASE_URL`. The `APIClient` reads it from `Bundle.main.infoDictionary`.
+- Local dev value: `http://localhost:5050` (host) → container port 5000. Staging and prod values live in `.env.example` (documented) and the deployment platform's secret store (actual).
+- No trailing slash. Paths are appended as `"\(base)/devices/link"` etc.
+
+### Firmware Numbering Convention
+
+Arduino sketches live under `arduino/NN_name/NN_name.ino` where `NN` is a zero-padded two-digit sequence number and `name` is a short snake_case label. Example: `08_full_wearable`, `09_wearable_pairing`.
+
+- **Latest wins**: The highest-numbered sketch is always the current production build. Older sketches are kept intact for diff clarity and never edited after a new number is cut.
+- **Forking rule**: To add a feature, copy the previous sketch to a new numbered directory (do not modify the previous one). Commit message should note the fork, e.g. "fork 08 -> 09: add MAC pairing char".
+- **Matching directory and file names**: The `.ino` filename must match its parent directory name (Arduino IDE requirement).
+- **Documentation pointers**: When adding a new sketch that introduces a protocol or characteristic visible to other layers (iOS, backend), add or update a file under `documentation/` and reference it from this section.

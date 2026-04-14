@@ -1,9 +1,10 @@
 import CoreBluetooth
 import SwiftUI
 
-// UUIDs for the ESP32S3 BLE service — match these on the Arduino side
-let spatialServiceUUID = CBUUID(string: "4fafc201-1fb5-459e-8fcc-c5c9c331914b")
+// UUIDs must match the Arduino firmware (arduino/09_wearable_pairing).
+let spatialServiceUUID = CBUUID(string: "12345678-1234-5678-1234-56781234abcd")
 let spatialCharacteristicUUID = CBUUID(string: "beb5483e-36e1-4688-b7f5-ea07361b26a8")
+let macReadCharacteristicUUID = CBUUID(string: "12345678-1234-5678-1234-56781234abce")
 
 struct DiscoveredDevice: Identifiable {
     let id: UUID
@@ -26,10 +27,7 @@ final class BLEManager: NSObject, @unchecked Sendable {
     var errorMessage: String?
 
     enum ConnectionState: Equatable {
-        case disconnected
-        case scanning
-        case connecting
-        case connected
+        case disconnected, scanning, connecting, connected
         case failed(String)
 
         var label: String {
@@ -55,7 +53,11 @@ final class BLEManager: NSObject, @unchecked Sendable {
 
     private var centralManager: CBCentralManager!
     private var spatialCharacteristic: CBCharacteristic?
+    private var macCharacteristic: CBCharacteristic?
     private var rssiTimer: Timer?
+
+    // Async readMAC support.
+    private var pendingMACContinuation: CheckedContinuation<String, Error>?
 
     override init() {
         super.init()
@@ -71,8 +73,6 @@ final class BLEManager: NSObject, @unchecked Sendable {
             withServices: nil,
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
         )
-
-        // Auto-stop after 15 seconds
         DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
             guard let self, self.isScanning else { return }
             self.stopScanning()
@@ -82,9 +82,7 @@ final class BLEManager: NSObject, @unchecked Sendable {
     func stopScanning() {
         centralManager.stopScan()
         isScanning = false
-        if connectionState == .scanning {
-            connectionState = .disconnected
-        }
+        if connectionState == .scanning { connectionState = .disconnected }
     }
 
     func connect(to device: DiscoveredDevice) {
@@ -101,8 +99,30 @@ final class BLEManager: NSObject, @unchecked Sendable {
         }
         connectedPeripheral = nil
         spatialCharacteristic = nil
+        macCharacteristic = nil
         connectionState = .disconnected
         rssi = 0
+    }
+
+    /// Reads the MAC characteristic from the currently connected peripheral.
+    /// Rediscovers services/characteristics if needed.
+    func readMAC() async throws -> String {
+        guard let peripheral = connectedPeripheral else {
+            throw NSError(domain: "BLEManager", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "Not connected"])
+        }
+        if let char = macCharacteristic {
+            return try await withCheckedThrowingContinuation { cont in
+                self.pendingMACContinuation = cont
+                peripheral.readValue(for: char)
+            }
+        }
+        // Trigger (re)discovery, then wait for the value.
+        peripheral.discoverServices([spatialServiceUUID])
+        return try await withCheckedThrowingContinuation { cont in
+            self.pendingMACContinuation = cont
+            // Discovery callbacks below will read the MAC once found.
+        }
     }
 
     private func startRSSIUpdates() {
@@ -132,8 +152,6 @@ extension BLEManager: CBCentralManagerDelegate {
         let name = peripheral.name
             ?? (advertisementData[CBAdvertisementDataLocalNameKey] as? String)
             ?? "Unknown"
-
-        // Filter out unnamed devices for cleaner list
         guard name != "Unknown" else { return }
 
         DispatchQueue.main.async {
@@ -141,12 +159,8 @@ extension BLEManager: CBCentralManagerDelegate {
                 self.discoveredDevices[idx].rssi = RSSI.intValue
             } else {
                 self.discoveredDevices.append(
-                    DiscoveredDevice(
-                        id: peripheral.identifier,
-                        peripheral: peripheral,
-                        name: name,
-                        rssi: RSSI.intValue
-                    )
+                    DiscoveredDevice(id: peripheral.identifier, peripheral: peripheral,
+                                     name: name, rssi: RSSI.intValue)
                 )
             }
         }
@@ -162,24 +176,21 @@ extension BLEManager: CBCentralManagerDelegate {
         }
     }
 
-    nonisolated func centralManager(
-        _ central: CBCentralManager,
-        didFailToConnect peripheral: CBPeripheral,
-        error: Error?
-    ) {
+    nonisolated func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         DispatchQueue.main.async {
             self.connectionState = .failed(error?.localizedDescription ?? "Connection failed")
+            if let cont = self.pendingMACContinuation {
+                self.pendingMACContinuation = nil
+                cont.resume(throwing: error ?? NSError(domain: "BLE", code: -1))
+            }
         }
     }
 
-    nonisolated func centralManager(
-        _ central: CBCentralManager,
-        didDisconnectPeripheral peripheral: CBPeripheral,
-        error: Error?
-    ) {
+    nonisolated func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         DispatchQueue.main.async {
             self.connectedPeripheral = nil
             self.spatialCharacteristic = nil
+            self.macCharacteristic = nil
             self.connectionState = .disconnected
             self.rssi = 0
             self.rssiTimer?.invalidate()
@@ -193,8 +204,10 @@ extension BLEManager: CBCentralManagerDelegate {
 extension BLEManager: CBPeripheralDelegate {
     nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         guard let services = peripheral.services else { return }
-        for service in services {
-            peripheral.discoverCharacteristics([spatialCharacteristicUUID], for: service)
+        for service in services where service.uuid == spatialServiceUUID {
+            peripheral.discoverCharacteristics(
+                [spatialCharacteristicUUID, macReadCharacteristicUUID], for: service
+            )
         }
     }
 
@@ -206,16 +219,20 @@ extension BLEManager: CBPeripheralDelegate {
         guard let characteristics = service.characteristics else { return }
         for characteristic in characteristics {
             if characteristic.uuid == spatialCharacteristicUUID {
-                DispatchQueue.main.async {
-                    self.spatialCharacteristic = characteristic
-                }
-                // Subscribe to notifications if supported
+                DispatchQueue.main.async { self.spatialCharacteristic = characteristic }
                 if characteristic.properties.contains(.notify) {
                     peripheral.setNotifyValue(true, for: characteristic)
                 }
-                // Read initial value
                 if characteristic.properties.contains(.read) {
                     peripheral.readValue(for: characteristic)
+                }
+            } else if characteristic.uuid == macReadCharacteristicUUID {
+                DispatchQueue.main.async { self.macCharacteristic = characteristic }
+                // If someone awaited readMAC() before discovery completed, kick off the read now.
+                DispatchQueue.main.async {
+                    if self.pendingMACContinuation != nil {
+                        peripheral.readValue(for: characteristic)
+                    }
                 }
             }
         }
@@ -226,16 +243,29 @@ extension BLEManager: CBPeripheralDelegate {
         didUpdateValueFor characteristic: CBCharacteristic,
         error: Error?
     ) {
-        guard let data = characteristic.value else { return }
         DispatchQueue.main.async {
+            if characteristic.uuid == macReadCharacteristicUUID {
+                if let cont = self.pendingMACContinuation {
+                    self.pendingMACContinuation = nil
+                    if let err = error {
+                        cont.resume(throwing: err)
+                    } else if let data = characteristic.value,
+                              let mac = String(data: data, encoding: .utf8) {
+                        cont.resume(returning: mac)
+                    } else {
+                        cont.resume(throwing: NSError(domain: "BLE", code: 2,
+                            userInfo: [NSLocalizedDescriptionKey: "Empty MAC value"]))
+                    }
+                }
+                return
+            }
+            guard let data = characteristic.value else { return }
             self.lastReceivedData = data
             self.lastReceivedString = String(data: data, encoding: .utf8)
         }
     }
 
     nonisolated func peripheral(_ peripheral: CBPeripheral, didReadRSSI RSSI: NSNumber, error: Error?) {
-        DispatchQueue.main.async {
-            self.rssi = RSSI.intValue
-        }
+        DispatchQueue.main.async { self.rssi = RSSI.intValue }
     }
 }
