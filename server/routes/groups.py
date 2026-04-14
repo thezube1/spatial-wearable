@@ -18,10 +18,33 @@ def _load_members(sb, group_id: str):
     ids = [j["user_id"] for j in joins]
     users = sb.table("users").select("id, username, display_name, avatar_url").in_("id", ids).execute().data or []
     by_id = {u["id"]: u for u in users}
-    return [
-        {**by_id.get(j["user_id"], {"id": j["user_id"]}), "joined_at": j["joined_at"]}
-        for j in joins
-    ]
+    out = []
+    for j in joins:
+        u = by_id.get(j["user_id"], {})
+        out.append({
+            "user_id": j["user_id"],
+            "username": u.get("username"),
+            "display_name": u.get("display_name"),
+            "avatar_url": u.get("avatar_url"),
+            "joined_at": j["joined_at"],
+        })
+    return out
+
+
+def _load_leader(sb, leader_id: str):
+    if not leader_id:
+        return None
+    ld = sb.table("users").select("id, username, display_name, avatar_url").eq("id", leader_id).limit(1).execute().data
+    if not ld:
+        return {"user_id": leader_id, "username": None, "display_name": None, "avatar_url": None, "joined_at": None}
+    u = ld[0]
+    return {
+        "user_id": u["id"],
+        "username": u.get("username"),
+        "display_name": u.get("display_name"),
+        "avatar_url": u.get("avatar_url"),
+        "joined_at": None,
+    }
 
 
 @bp.post("/groups")
@@ -72,10 +95,7 @@ def get_group(group_id: str):
     if group.get("event_id"):
         ev = sb.table("events").select("*").eq("id", group["event_id"]).limit(1).execute().data
         event = ev[0] if ev else None
-    leader = None
-    if group.get("leader_id"):
-        ld = sb.table("users").select("id, username, display_name, avatar_url").eq("id", group["leader_id"]).limit(1).execute().data
-        leader = ld[0] if ld else None
+    leader = _load_leader(sb, group.get("leader_id"))
     return jsonify({"group": group, "members": members, "leader": leader, "event": event})
 
 

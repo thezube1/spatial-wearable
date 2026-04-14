@@ -51,7 +51,7 @@ def patch_me():
 def search_users():
     sb = supabase()
     q = (request.args.get("q") or "").strip()
-    query = sb.table("users").select("id, username, display_name, avatar_url")
+    query = sb.table("users").select("id, username, display_name, avatar_url").neq("id", g.user_id)
     if q:
         pattern = f"%{q}%"
         query = query.or_(f"username.ilike.{pattern},display_name.ilike.{pattern}")

@@ -6,6 +6,7 @@ struct GroupSetupView: View {
     @State private var me: UserProfile?
     @State private var errorMessage: String?
     @State private var isSubmitting = false
+    @State private var showDiscardAlert = false
 
     var everyone: [UserProfile] {
         var list: [UserProfile] = []
@@ -20,10 +21,26 @@ struct GroupSetupView: View {
             OnboardingBackground()
 
             VStack(spacing: 18) {
+                HStack {
+                    Button {
+                        showDiscardAlert = true
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.left")
+                            Text("Back")
+                        }
+                        .font(OnboardingStyle.font(14, weight: .semibold))
+                        .foregroundStyle(.white)
+                    }
+                    Spacer()
+                }
+                .frame(width: OnboardingStyle.fieldWidth)
+                .padding(.top, 16)
+
                 Text("Let's set your group up.")
                     .font(OnboardingStyle.font(24, weight: .bold))
                     .foregroundStyle(.white)
-                    .padding(.top, 32)
+                    .padding(.top, 4)
 
                 // Group name card
                 HStack(spacing: 12) {
@@ -85,6 +102,20 @@ struct GroupSetupView: View {
             }
         }
         .task { await loadMe() }
+        .alert("Delete group?", isPresented: $showDiscardAlert) {
+            Button("Cancel", role: .cancel) { }
+            Button("Delete", role: .destructive) { discardAndGoBack() }
+        } message: {
+            Text("This will discard the group you're setting up and take you back to the previous step.")
+        }
+    }
+
+    private func discardAndGoBack() {
+        coordinator.groupName = ""
+        coordinator.selectedMembers = []
+        coordinator.leaderId = nil
+        coordinator.createdGroup = nil
+        coordinator.step = .createOrJoin
     }
 
     private func avatarTile(_ person: UserProfile) -> some View {

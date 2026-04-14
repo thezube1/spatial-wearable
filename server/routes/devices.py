@@ -49,3 +49,14 @@ def my_device():
     sb = supabase()
     rows = sb.table("devices").select("*").eq("linked_user_id", g.user_id).limit(1).execute().data
     return jsonify({"device": rows[0] if rows else None})
+
+
+@bp.delete("/devices/me")
+@require_auth
+def unlink_device():
+    sb = supabase()
+    sb.table("devices").update({
+        "linked_user_id": None,
+        "linked_at": None,
+    }).eq("linked_user_id", g.user_id).execute()
+    return jsonify({"ok": True})

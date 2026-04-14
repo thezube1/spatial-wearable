@@ -10,12 +10,25 @@ struct DashboardView: View {
     @State private var errorMessage: String?
 
     var body: some View {
+        TabView {
+            homeTab
+                .tabItem { Label("Home", systemImage: "house.fill") }
+
+            DeviceTabView(device: $device, errorMessage: $errorMessage)
+                .tabItem { Label("Device", systemImage: "applewatch") }
+        }
+        .task {
+            device = try? await APIClient.shared.getMyDevice()
+            await autoReconnect()
+        }
+    }
+
+    private var homeTab: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
                     eventCard
                     groupCard
-                    deviceCard
 
                     Button(role: .destructive) {
                         Task {
@@ -35,10 +48,6 @@ struct DashboardView: View {
             }
             .background(Color(.systemGroupedBackground))
             .navigationTitle("Dashboard")
-        }
-        .task {
-            device = try? await APIClient.shared.getMyDevice()
-            await autoReconnect()
         }
     }
 
@@ -92,22 +101,6 @@ struct DashboardView: View {
                 }
             } else {
                 Text("No group").foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private var deviceCard: some View {
-        card(title: "Wristband") {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Circle().fill(ble.connectionState.color).frame(width: 8, height: 8)
-                    Text(ble.connectionState.label).font(.subheadline)
-                }
-                if let mac = device?.mac_address ?? coordinator.linkedDeviceMAC {
-                    Text(mac).font(.caption.monospaced()).foregroundStyle(.secondary)
-                } else {
-                    Text("No device linked").foregroundStyle(.secondary).font(.caption)
-                }
             }
         }
     }

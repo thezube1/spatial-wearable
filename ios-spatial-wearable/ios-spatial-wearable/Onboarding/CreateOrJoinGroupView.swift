@@ -42,8 +42,6 @@ struct CreateOrJoinGroupView: View {
 
                     Button("Continue") { coordinator.step = .groupSetup }
                         .buttonStyle(PrimaryBlueButtonStyle())
-                        .disabled(coordinator.selectedMembers.isEmpty)
-                        .opacity(coordinator.selectedMembers.isEmpty ? 0.5 : 1)
                 } else {
                     TextField("", text: $coordinator.joinCode,
                               prompt: Text("Enter join code").foregroundColor(.white.opacity(0.6)))

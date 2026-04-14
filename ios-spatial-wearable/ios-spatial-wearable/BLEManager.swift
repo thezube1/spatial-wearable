@@ -120,17 +120,44 @@ final class BLEManager: NSObject, @unchecked Sendable {
             throw NSError(domain: "BLEManager", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "Not connected"])
         }
-        if let char = macCharacteristic {
+        return try await withMACReadTimeout(seconds: 8) {
+            if let char = self.macCharacteristic {
+                return try await withCheckedThrowingContinuation { cont in
+                    self.pendingMACContinuation = cont
+                    peripheral.readValue(for: char)
+                }
+            }
+            // Trigger (re)discovery, then wait for the value.
+            peripheral.discoverServices([spatialServiceUUID])
             return try await withCheckedThrowingContinuation { cont in
                 self.pendingMACContinuation = cont
-                peripheral.readValue(for: char)
+                // Discovery callbacks below will read the MAC once found.
             }
         }
-        // Trigger (re)discovery, then wait for the value.
-        peripheral.discoverServices([spatialServiceUUID])
-        return try await withCheckedThrowingContinuation { cont in
-            self.pendingMACContinuation = cont
-            // Discovery callbacks below will read the MAC once found.
+    }
+
+    private func withMACReadTimeout(seconds: Double,
+                                    _ op: @escaping () async throws -> String) async throws -> String {
+        try await withThrowingTaskGroup(of: String.self) { group in
+            group.addTask { try await op() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                await MainActor.run {
+                    if let cont = self.pendingMACContinuation {
+                        self.pendingMACContinuation = nil
+                        cont.resume(throwing: NSError(domain: "BLEManager", code: 3,
+                            userInfo: [NSLocalizedDescriptionKey: "MAC read timed out"]))
+                    }
+                }
+                throw NSError(domain: "BLEManager", code: 3,
+                              userInfo: [NSLocalizedDescriptionKey: "MAC read timed out"])
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else {
+                throw NSError(domain: "BLEManager", code: 4,
+                              userInfo: [NSLocalizedDescriptionKey: "MAC read failed"])
+            }
+            return first
         }
     }
 

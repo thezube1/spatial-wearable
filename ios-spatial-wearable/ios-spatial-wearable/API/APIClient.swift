@@ -84,32 +84,46 @@ final class APIClient {
     // MARK: - Endpoints
 
     func getMe() async throws -> UserProfile {
-        try await request("/me")
+        struct Wrapper: Decodable { let user: UserProfile }
+        let w: Wrapper = try await request("/me")
+        return w.user
     }
 
     func updateMe(username: String?, displayName: String?) async throws -> UserProfile {
         struct Body: Encodable { let username: String?; let display_name: String? }
-        return try await request("/me", method: "PATCH",
-                                 body: Body(username: username, display_name: displayName))
+        struct Wrapper: Decodable { let user: UserProfile }
+        let w: Wrapper = try await request("/me", method: "PATCH",
+                                           body: Body(username: username, display_name: displayName))
+        return w.user
     }
 
     func searchUsers(query: String) async throws -> [UserProfile] {
-        try await request("/users/search", query: [URLQueryItem(name: "q", value: query)])
+        struct Wrapper: Decodable { let users: [UserProfile] }
+        let w: Wrapper = try await request("/users/search", query: [URLQueryItem(name: "q", value: query)])
+        return w.users
     }
 
     func linkDevice(mac: String) async throws -> Device {
         struct Body: Encodable { let mac: String }
-        return try await request("/devices/link", method: "POST", body: Body(mac: mac))
+        struct Wrapper: Decodable { let device: Device }
+        let w: Wrapper = try await request("/devices/link", method: "POST", body: Body(mac: mac))
+        return w.device
+    }
+
+    func unlinkDevice() async throws {
+        _ = try await requestData("/devices/me", method: "DELETE")
     }
 
     func getMyDevice() async throws -> Device? {
-        let data = try await requestData("/devices/me")
-        if data.isEmpty || (String(data: data, encoding: .utf8) == "null") { return nil }
-        return try? JSONDecoder().decode(Device.self, from: data)
+        struct Wrapper: Decodable { let device: Device? }
+        let w: Wrapper = try await request("/devices/me")
+        return w.device
     }
 
     func listEvents() async throws -> [Event] {
-        try await request("/events")
+        struct Wrapper: Decodable { let events: [Event] }
+        let w: Wrapper = try await request("/events")
+        return w.events
     }
 
     func getEvent(id: String) async throws -> Event {
@@ -123,13 +137,15 @@ final class APIClient {
             let member_ids: [String]
             let leader_id: String?
         }
-        return try await request("/groups", method: "POST",
+        let resp: GroupResponse = try await request("/groups", method: "POST",
                                  body: Body(name: name, event_id: eventId,
                                             member_ids: memberIds, leader_id: leaderId))
+        return resp.toDetail()
     }
 
     func getGroup(id: String) async throws -> GroupDetail {
-        try await request("/groups/\(id)")
+        let resp: GroupResponse = try await request("/groups/\(id)")
+        return resp.toDetail()
     }
 
     func addMember(groupId: String, userId: String) async throws {
@@ -144,13 +160,27 @@ final class APIClient {
 
     func setLeader(groupId: String, userId: String) async throws -> GroupDetail {
         struct Body: Encodable { let user_id: String }
-        return try await request("/groups/\(groupId)/leader", method: "PATCH",
-                                 body: Body(user_id: userId))
+        _ = try await requestData("/groups/\(groupId)/leader", method: "PATCH",
+                                  body: Body(user_id: userId))
+        return try await getGroup(id: groupId)
     }
 
     func joinGroup(joinCode: String) async throws -> GroupDetail {
         struct Body: Encodable { let join_code: String }
-        return try await request("/groups/join", method: "POST", body: Body(join_code: joinCode))
+        let resp: GroupResponse = try await request("/groups/join", method: "POST", body: Body(join_code: joinCode))
+        return resp.toDetail()
+    }
+}
+
+private struct GroupResponse: Decodable {
+    struct Inner: Decodable { let id: String; let name: String; let join_code: String? }
+    let group: Inner
+    let members: [GroupMember]
+    let leader: GroupMember?
+    let event: Event?
+    func toDetail() -> GroupDetail {
+        GroupDetail(id: group.id, name: group.name, event: event,
+                    leader: leader, members: members, join_code: group.join_code)
     }
 }
 
