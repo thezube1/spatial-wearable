@@ -92,9 +92,9 @@ bool peerWasFound = false;             // Track if we ever had a peer
 
 // ---- Haptic Configuration ----
 #define HAPTIC_RANGE_M     10.0   // Start buzzing within this range
-#define HAPTIC_MIN_INTERVAL 80    // ms — fastest buzz (very close)
-#define HAPTIC_MAX_INTERVAL 1000  // ms — slowest buzz (at 10m)
-#define HAPTIC_PULSE_MS     60    // Duration of each buzz pulse
+#define HAPTIC_MIN_INTERVAL 50    // ms — fastest buzz (very close)
+#define HAPTIC_MAX_INTERVAL 800   // ms — slowest buzz (at 10m)
+#define HAPTIC_PULSE_MS     200   // Duration of each buzz pulse (was 60)
 
 unsigned long lastHapticOn = 0;
 unsigned long lastHapticOff = 0;
@@ -691,6 +691,10 @@ void updateMode() {
     case MODE_GPS:
       // Switch to BLE when GPS says we're close enough
       if (hasGpsFix && gpsDistance <= SWITCH_TO_BLE_M && hasBle) {
+        currentMode = MODE_BLE;
+      }
+      // BLE says close (<5m) but GPS disagrees — trust BLE at close range
+      else if (hasBle && bleDistance < 5.0 && hasGpsFix && gpsDistance > bleDistance) {
         currentMode = MODE_BLE;
       }
       // Also switch to BLE if GPS is unavailable but BLE is working
