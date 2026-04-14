@@ -14,12 +14,44 @@ struct DashboardView: View {
             homeTab
                 .tabItem { Label("Home", systemImage: "house.fill") }
 
+            GroupTabView()
+                .tabItem { Label("Group", systemImage: "person.3.fill") }
+
             DeviceTabView(device: $device, errorMessage: $errorMessage)
                 .tabItem { Label("Device", systemImage: "applewatch") }
         }
         .task {
             device = try? await APIClient.shared.getMyDevice()
-            await autoReconnect()
+            await reconnectLoop()
+        }
+    }
+
+    /// Runs for the lifetime of the dashboard. Whenever we're not connected
+    /// and the backend says this user owns a wristband, scan for it and
+    /// re-auth with the Supabase user_id. Cancellation (view disappears,
+    /// sign-out) naturally ends the loop via Task cancellation.
+    private func reconnectLoop() async {
+        while !Task.isCancelled {
+            if device == nil {
+                device = try? await APIClient.shared.getMyDevice()
+            }
+            let idle: Bool = {
+                switch ble.connectionState {
+                case .disconnected, .failed: return true
+                default: return false
+                }
+            }()
+            if idle,
+               let mac = device?.mac_address ?? coordinator.linkedDeviceMAC,
+               let uid = await SupabaseService.shared.currentUserId() {
+                do {
+                    try await ble.reconnect(toMAC: mac)
+                    try await ble.authenticate(userId: uid)
+                } catch {
+                    // Swallow and retry — transient BLE failures are expected.
+                }
+            }
+            try? await Task.sleep(for: .seconds(5))
         }
     }
 
@@ -48,20 +80,6 @@ struct DashboardView: View {
             }
             .background(Color(.systemGroupedBackground))
             .navigationTitle("Dashboard")
-        }
-    }
-
-    /// On dashboard appear, if the backend knows a linked MAC and we're not
-    /// already connected, scan for that wristband and re-auth with our user_id.
-    private func autoReconnect() async {
-        guard ble.connectionState != .connected else { return }
-        guard let mac = device?.mac_address ?? coordinator.linkedDeviceMAC else { return }
-        guard let uid = await SupabaseService.shared.currentUserId() else { return }
-        do {
-            try await ble.reconnect(toMAC: mac)
-            try await ble.authenticate(userId: uid)
-        } catch {
-            errorMessage = error.localizedDescription
         }
     }
 

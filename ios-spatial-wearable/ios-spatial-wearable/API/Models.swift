@@ -51,4 +51,5 @@ struct GroupDetail: Codable, Identifiable, Hashable {
     let leader: GroupMember?
     let members: [GroupMember]
     let join_code: String?
+    let created_by: String?
 }

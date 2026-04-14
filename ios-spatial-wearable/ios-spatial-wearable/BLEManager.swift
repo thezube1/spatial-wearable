@@ -121,17 +121,10 @@ final class BLEManager: NSObject, @unchecked Sendable {
                           userInfo: [NSLocalizedDescriptionKey: "Not connected"])
         }
         return try await withMACReadTimeout(seconds: 8) {
-            if let char = self.macCharacteristic {
-                return try await withCheckedThrowingContinuation { cont in
-                    self.pendingMACContinuation = cont
-                    peripheral.readValue(for: char)
-                }
-            }
-            // Trigger (re)discovery, then wait for the value.
-            peripheral.discoverServices([spatialServiceUUID])
+            let char = try await self.waitForCharacteristic(macReadCharacteristicUUID, timeout: 5.0)
             return try await withCheckedThrowingContinuation { cont in
                 self.pendingMACContinuation = cont
-                // Discovery callbacks below will read the MAC once found.
+                peripheral.readValue(for: char)
             }
         }
     }
@@ -161,6 +154,26 @@ final class BLEManager: NSObject, @unchecked Sendable {
         }
     }
 
+    /// Poll until the given characteristic has been discovered (service discovery
+    /// completes asynchronously after `didConnect`, so callers that write
+    /// immediately will otherwise race). Throws on timeout.
+    private func characteristic(for uuid: CBUUID) -> CBCharacteristic? {
+        if uuid == ownerWriteCharacteristicUUID { return ownerWriteCharacteristic }
+        if uuid == ownerAuthCharacteristicUUID { return ownerAuthCharacteristic }
+        if uuid == macReadCharacteristicUUID   { return macCharacteristic }
+        return nil
+    }
+
+    private func waitForCharacteristic(_ uuid: CBUUID, timeout: TimeInterval) async throws -> CBCharacteristic {
+        let start = Date()
+        while Date().timeIntervalSince(start) < timeout {
+            if let c = characteristic(for: uuid) { return c }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        throw NSError(domain: "BLEManager", code: 11,
+                      userInfo: [NSLocalizedDescriptionKey: "Characteristic \(uuid) not discovered"])
+    }
+
     /// Write the Supabase user_id to the owner-write characteristic during pairing.
     /// Firmware stores it in NVS and exits pairing mode.
     func writeOwner(userId: String) async throws {
@@ -178,14 +191,7 @@ final class BLEManager: NSObject, @unchecked Sendable {
             throw NSError(domain: "BLEManager", code: 10,
                           userInfo: [NSLocalizedDescriptionKey: "Not connected"])
         }
-        let char: CBCharacteristic?
-        if uuid == ownerWriteCharacteristicUUID { char = ownerWriteCharacteristic }
-        else if uuid == ownerAuthCharacteristicUUID { char = ownerAuthCharacteristic }
-        else { char = nil }
-        guard let characteristic = char else {
-            throw NSError(domain: "BLEManager", code: 11,
-                          userInfo: [NSLocalizedDescriptionKey: "Characteristic \(uuid) not discovered"])
-        }
+        let characteristic = try await waitForCharacteristic(uuid, timeout: 5.0)
         guard let data = value.data(using: .utf8) else {
             throw NSError(domain: "BLEManager", code: 12,
                           userInfo: [NSLocalizedDescriptionKey: "Non-UTF8 value"])

@@ -50,8 +50,13 @@ struct SelectEventView: View {
                 }
                 .frame(width: OnboardingStyle.fieldWidth)
 
-                Button("Continue") {
-                    coordinator.step = .createOrJoin
+                Button(coordinator.returnToGroupSetupAfterEvent ? "Save event" : "Continue") {
+                    if coordinator.returnToGroupSetupAfterEvent {
+                        coordinator.returnToGroupSetupAfterEvent = false
+                        coordinator.step = .groupSetup
+                    } else {
+                        coordinator.step = .createOrJoin
+                    }
                 }
                 .buttonStyle(PrimaryBlueButtonStyle())
                 .disabled(coordinator.selectedEvent == nil)

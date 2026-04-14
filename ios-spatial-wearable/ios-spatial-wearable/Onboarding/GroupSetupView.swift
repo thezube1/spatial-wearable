@@ -43,34 +43,68 @@ struct GroupSetupView: View {
                     .padding(.top, 4)
 
                 // Group name card
-                HStack(spacing: 12) {
-                    ZStack {
-                        Circle().fill(Color.white.opacity(0.18)).frame(width: 44, height: 44)
-                        Image(systemName: "pencil")
-                            .foregroundStyle(.white)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 2) {
+                        Text("Group name").font(OnboardingStyle.font(12, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.85))
+                        Text("*").foregroundStyle(.red)
                     }
-                    VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 12) {
+                        ZStack {
+                            Circle().fill(Color.white.opacity(0.18)).frame(width: 44, height: 44)
+                            Image(systemName: "pencil").foregroundStyle(.white)
+                        }
                         TextField("", text: $coordinator.groupName,
-                                  prompt: Text("Group name").foregroundColor(.white.opacity(0.6)))
+                                  prompt: Text("Required — e.g. \"Rave crew\"")
+                                    .foregroundColor(.white.opacity(0.6)))
                             .font(OnboardingStyle.font(15, weight: .bold))
                             .foregroundStyle(.white)
-                        Text("We're headed to \(coordinator.selectedEvent?.name ?? "—")!")
-                            .font(OnboardingStyle.font(12))
-                            .opacity(0.6)
-                            .foregroundStyle(.white)
                     }
-                    Spacer()
+                    .padding(12)
+                    .background(Color.white.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: OnboardingStyle.cornerRadius))
                 }
-                .padding(12)
-                .frame(width: OnboardingStyle.fieldWidth)
-                .background(Color.white.opacity(0.1))
-                .clipShape(RoundedRectangle(cornerRadius: OnboardingStyle.cornerRadius))
+                .frame(width: OnboardingStyle.fieldWidth, alignment: .leading)
 
-                Text("Select a group leader who will keep an eye out for everyone at all times.")
-                    .font(OnboardingStyle.font(13))
-                    .foregroundStyle(.white.opacity(0.85))
-                    .multilineTextAlignment(.center)
+                // Event card (configurable — routes back to event picker).
+                Button {
+                    coordinator.returnToGroupSetupAfterEvent = true
+                    coordinator.step = .selectEvent
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "calendar")
+                            .foregroundStyle(.white)
+                            .frame(width: 28)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Event")
+                                .font(OnboardingStyle.font(11))
+                                .foregroundStyle(.white.opacity(0.7))
+                            Text(coordinator.selectedEvent?.name ?? "Choose event")
+                                .font(OnboardingStyle.font(14, weight: .semibold))
+                                .foregroundStyle(.white)
+                        }
+                        Spacer()
+                        Text("Change")
+                            .font(OnboardingStyle.font(12, weight: .semibold))
+                            .foregroundStyle(.blue)
+                    }
+                    .padding(12)
                     .frame(width: OnboardingStyle.fieldWidth)
+                    .background(Color.white.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: OnboardingStyle.cornerRadius))
+                }
+                .buttonStyle(.plain)
+
+                VStack(spacing: 4) {
+                    Text("Tap an avatar to choose a group leader.")
+                        .font(OnboardingStyle.font(13, weight: .semibold))
+                        .foregroundStyle(.white)
+                    Text("Defaults to you (the group creator). The leader keeps an eye out for everyone.")
+                        .font(OnboardingStyle.font(12))
+                        .foregroundStyle(.white.opacity(0.75))
+                }
+                .multilineTextAlignment(.center)
+                .frame(width: OnboardingStyle.fieldWidth)
 
                 // Avatar grid
                 let columns = [GridItem(.adaptive(minimum: 80), spacing: 10)]
@@ -120,21 +154,32 @@ struct GroupSetupView: View {
 
     private func avatarTile(_ person: UserProfile) -> some View {
         let isLeader = coordinator.leaderId == person.id
+        let isMe = me?.id == person.id
         return VStack(spacing: 6) {
-            Circle()
-                .fill(Color.white.opacity(0.2))
-                .frame(width: 60, height: 60)
-                .overlay(Image(systemName: "person.fill").foregroundStyle(.white.opacity(0.7)))
-                .overlay(
-                    Circle().stroke(isLeader ? Color.blue : Color.clear, lineWidth: 3)
-                )
-            Text(person.display_name ?? person.username ?? "—")
-                .font(OnboardingStyle.font(11))
+            ZStack(alignment: .topTrailing) {
+                Circle()
+                    .fill(Color.white.opacity(0.2))
+                    .frame(width: 60, height: 60)
+                    .overlay(Image(systemName: "person.fill").foregroundStyle(.white.opacity(0.7)))
+                    .overlay(
+                        Circle().stroke(isLeader ? Color.blue : Color.clear, lineWidth: 3)
+                    )
+                if isLeader {
+                    Image(systemName: "star.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.white)
+                        .padding(5)
+                        .background(Circle().fill(Color.blue))
+                        .offset(x: 4, y: -4)
+                }
+            }
+            Text(isMe ? "You" : (person.display_name ?? person.username ?? "—"))
+                .font(OnboardingStyle.font(11, weight: isLeader ? .semibold : .regular))
                 .foregroundStyle(.white)
                 .lineLimit(1)
-            Circle()
-                .fill(isLeader ? Color.blue : Color.clear)
-                .frame(width: 6, height: 6)
+            Text(isLeader ? "Leader" : " ")
+                .font(OnboardingStyle.font(10, weight: .semibold))
+                .foregroundStyle(isLeader ? .blue : .clear)
         }
         .onTapGesture { coordinator.leaderId = person.id }
     }
@@ -149,7 +194,12 @@ struct GroupSetupView: View {
     }
 
     private func submit() async {
-        guard let eventId = coordinator.selectedEvent?.id else { return }
+        guard let eventId = coordinator.selectedEvent?.id else {
+            errorMessage = "Pick an event first."
+            coordinator.returnToGroupSetupAfterEvent = true
+            coordinator.step = .selectEvent
+            return
+        }
         isSubmitting = true
         defer { isSubmitting = false }
         do {

@@ -165,6 +165,34 @@ final class APIClient {
         return try await getGroup(id: groupId)
     }
 
+    func getMyGroup() async throws -> GroupDetail? {
+        struct NullableWrapper: Decodable {
+            let group: GroupInner?
+            let members: [GroupMember]?
+            let leader: GroupMember?
+            let event: Event?
+        }
+        let w: NullableWrapper = try await request("/groups/me")
+        guard let gr = w.group else { return nil }
+        return GroupDetail(id: gr.id, name: gr.name, event: w.event,
+                           leader: w.leader, members: w.members ?? [], join_code: gr.join_code,
+                           created_by: gr.created_by)
+    }
+
+    func renameGroup(id: String, name: String) async throws -> GroupDetail {
+        struct Body: Encodable { let name: String }
+        let resp: GroupResponse = try await request("/groups/\(id)", method: "PATCH", body: Body(name: name))
+        return resp.toDetail()
+    }
+
+    func deleteGroup(id: String) async throws {
+        _ = try await requestData("/groups/\(id)", method: "DELETE")
+    }
+
+    func leaveGroup(id: String) async throws {
+        _ = try await requestData("/groups/\(id)/leave", method: "POST")
+    }
+
     func joinGroup(joinCode: String) async throws -> GroupDetail {
         struct Body: Encodable { let join_code: String }
         let resp: GroupResponse = try await request("/groups/join", method: "POST", body: Body(join_code: joinCode))
@@ -172,15 +200,17 @@ final class APIClient {
     }
 }
 
+struct GroupInner: Decodable { let id: String; let name: String; let join_code: String?; let created_by: String?; let leader_id: String? }
+
 private struct GroupResponse: Decodable {
-    struct Inner: Decodable { let id: String; let name: String; let join_code: String? }
-    let group: Inner
+    let group: GroupInner
     let members: [GroupMember]
     let leader: GroupMember?
     let event: Event?
     func toDetail() -> GroupDetail {
         GroupDetail(id: group.id, name: group.name, event: event,
-                    leader: leader, members: members, join_code: group.join_code)
+                    leader: leader, members: members, join_code: group.join_code,
+                    created_by: group.created_by)
     }
 }
 

@@ -47,6 +47,83 @@ def _load_leader(sb, leader_id: str):
     }
 
 
+def _full_detail(sb, group_id: str):
+    group = _load_group(sb, group_id)
+    if not group:
+        return None
+    members = _load_members(sb, group_id)
+    event = None
+    if group.get("event_id"):
+        ev = sb.table("events").select("*").eq("id", group["event_id"]).limit(1).execute().data
+        event = ev[0] if ev else None
+    leader = _load_leader(sb, group.get("leader_id"))
+    return {"group": group, "members": members, "leader": leader, "event": event}
+
+
+@bp.get("/groups/me")
+@require_auth
+def get_my_group():
+    sb = supabase()
+    rows = sb.table("group_members").select("group_id, joined_at").eq("user_id", g.user_id).order("joined_at", desc=True).limit(1).execute().data or []
+    if not rows:
+        return jsonify({"group": None})
+    detail = _full_detail(sb, rows[0]["group_id"])
+    if not detail:
+        return jsonify({"group": None})
+    return jsonify(detail)
+
+
+@bp.patch("/groups/<group_id>")
+@require_auth
+def update_group(group_id: str):
+    sb = supabase()
+    group = _load_group(sb, group_id)
+    if not group:
+        return jsonify({"error": "not_found"}), 404
+    if g.user_id not in (group.get("created_by"), group.get("leader_id")):
+        return jsonify({"error": "forbidden"}), 403
+    body = request.get_json(silent=True) or {}
+    patch = {}
+    if "name" in body:
+        name = (body.get("name") or "").strip()
+        if not name:
+            return jsonify({"error": "name_required"}), 400
+        patch["name"] = name
+    if not patch:
+        return jsonify(_full_detail(sb, group_id))
+    sb.table("groups").update(patch).eq("id", group_id).execute()
+    return jsonify(_full_detail(sb, group_id))
+
+
+@bp.delete("/groups/<group_id>")
+@require_auth
+def delete_group(group_id: str):
+    sb = supabase()
+    group = _load_group(sb, group_id)
+    if not group:
+        return jsonify({"error": "not_found"}), 404
+    if g.user_id != group.get("created_by"):
+        return jsonify({"error": "forbidden"}), 403
+    sb.table("group_members").delete().eq("group_id", group_id).execute()
+    sb.table("groups").delete().eq("id", group_id).execute()
+    return jsonify({"ok": True})
+
+
+@bp.post("/groups/<group_id>/leave")
+@require_auth
+def leave_group(group_id: str):
+    sb = supabase()
+    group = _load_group(sb, group_id)
+    if not group:
+        return jsonify({"error": "not_found"}), 404
+    if g.user_id == group.get("created_by"):
+        return jsonify({"error": "creator_cannot_leave"}), 400
+    sb.table("group_members").delete().eq("group_id", group_id).eq("user_id", g.user_id).execute()
+    if group.get("leader_id") == g.user_id:
+        sb.table("groups").update({"leader_id": group.get("created_by")}).eq("id", group_id).execute()
+    return jsonify({"ok": True})
+
+
 @bp.post("/groups")
 @require_auth
 def create_group():
@@ -164,4 +241,4 @@ def join_by_code():
         return jsonify({"error": "not_found"}), 404
     group = rows[0]
     sb.table("group_members").upsert({"group_id": group["id"], "user_id": g.user_id}).execute()
-    return jsonify({"group": group, "members": _load_members(sb, group["id"])})
+    return jsonify(_full_detail(sb, group["id"]))

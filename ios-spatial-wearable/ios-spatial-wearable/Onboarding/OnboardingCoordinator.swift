@@ -26,6 +26,9 @@ final class OnboardingCoordinator {
     var createdGroup: GroupDetail?
     var joinCode: String = ""
 
+    // When true, SelectEventView's Continue routes back to groupSetup instead of createOrJoin.
+    var returnToGroupSetupAfterEvent: Bool = false
+
     enum GroupMode { case create, join }
 
     init() {
