@@ -219,3 +219,9 @@ struct LinkWristbandView: View {
         }
     }
 }
+
+#Preview {
+    LinkWristbandView()
+        .environment(OnboardingCoordinator())
+        .environment(BLEManager())
+}

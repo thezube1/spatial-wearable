@@ -217,3 +217,8 @@ struct GroupSetupView: View {
         }
     }
 }
+
+#Preview {
+    GroupSetupView()
+        .environment(OnboardingCoordinator())
+}

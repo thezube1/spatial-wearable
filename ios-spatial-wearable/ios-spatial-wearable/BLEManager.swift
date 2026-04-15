@@ -9,10 +9,18 @@ let ownerWriteCharacteristicUUID = CBUUID(string: "12345678-1234-5678-1234-56781
 let ownerAuthCharacteristicUUID  = CBUUID(string: "12345678-1234-5678-1234-56781234abd0")
 let locationCharacteristicUUID   = CBUUID(string: "12345678-1234-5678-1234-56781234abd1")
 let targetCharacteristicUUID     = CBUUID(string: "12345678-1234-5678-1234-56781234abd2")
+let peerLocationCharacteristicUUID = CBUUID(string: "12345678-1234-5678-1234-56781234abd3")
 
 struct WearableLocation: Equatable {
     let latitude: Double
     let longitude: Double
+    let receivedAt: Date
+}
+
+struct PeerLocation: Equatable {
+    let latitude: Double
+    let longitude: Double
+    let name: String
     let receivedAt: Date
 }
 
@@ -36,6 +44,10 @@ final class BLEManager: NSObject, @unchecked Sendable {
     var rssi: Int = 0
     var errorMessage: String?
     var wearableLocation: WearableLocation?
+    var peerLocation: PeerLocation?
+    /// Display name of the currently-selected tracking target. Set when iOS
+    /// writes the target characteristic; used to label the peer's map pin.
+    var trackingTargetName: String?
 
     enum ConnectionState: Equatable {
         case disconnected, scanning, connecting, connected
@@ -69,6 +81,7 @@ final class BLEManager: NSObject, @unchecked Sendable {
     private var ownerAuthCharacteristic: CBCharacteristic?
     private var locationCharacteristic: CBCharacteristic?
     private var targetCharacteristic: CBCharacteristic?
+    private var peerLocationCharacteristic: CBCharacteristic?
     private var rssiTimer: Timer?
 
     // Async support.
@@ -122,7 +135,10 @@ final class BLEManager: NSObject, @unchecked Sendable {
         macCharacteristic = nil
         locationCharacteristic = nil
         targetCharacteristic = nil
+        peerLocationCharacteristic = nil
         wearableLocation = nil
+        peerLocation = nil
+        trackingTargetName = nil
         connectionState = .disconnected
         rssi = 0
     }
@@ -236,11 +252,20 @@ final class BLEManager: NSObject, @unchecked Sendable {
         payload.append(UInt8(nameData.count))
         payload.append(contentsOf: nameData)
         try await writeData(payload, toCharacteristic: targetCharacteristicUUID)
+        await MainActor.run {
+            self.trackingTargetName = name
+            // Drop any stale peer pin until the firmware pushes fresh GPS.
+            self.peerLocation = nil
+        }
     }
 
     /// Tell the wearable to stop tracking anyone (solo group or unlinked target).
     func clearTrackingTarget() async throws {
         try await writeData(Data([0x00]), toCharacteristic: targetCharacteristicUUID)
+        await MainActor.run {
+            self.trackingTargetName = nil
+            self.peerLocation = nil
+        }
     }
 
     private static func parseMAC(_ s: String) -> [UInt8]? {
@@ -310,6 +335,25 @@ final class BLEManager: NSObject, @unchecked Sendable {
         wearableLocation = WearableLocation(
             latitude: Double(lat),
             longitude: Double(lon),
+            receivedAt: Date()
+        )
+    }
+
+    /// Parse the 9-byte peer-location payload pushed by the wearable (abd3):
+    /// [valid(u8), lat(float32 LE), lon(float32 LE)]. valid=0 clears the pin.
+    private func handlePeerLocationPayload(_ data: Data) {
+        guard data.count == 9 else { return }
+        let valid = data[0] != 0
+        guard valid else {
+            peerLocation = nil
+            return
+        }
+        let lat: Float = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 1, as: Float.self) }
+        let lon: Float = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 5, as: Float.self) }
+        peerLocation = PeerLocation(
+            latitude: Double(lat),
+            longitude: Double(lon),
+            name: trackingTargetName ?? "Peer",
             receivedAt: Date()
         )
     }
@@ -397,7 +441,9 @@ extension BLEManager: CBCentralManagerDelegate {
             self.ownerAuthCharacteristic = nil
             self.locationCharacteristic = nil
             self.targetCharacteristic = nil
+            self.peerLocationCharacteristic = nil
             self.wearableLocation = nil
+            self.peerLocation = nil
             self.connectionState = .disconnected
             self.rssi = 0
             self.rssiTimer?.invalidate()
@@ -427,6 +473,7 @@ extension BLEManager: CBPeripheralDelegate {
                     ownerAuthCharacteristicUUID,
                     locationCharacteristicUUID,
                     targetCharacteristicUUID,
+                    peerLocationCharacteristicUUID,
                 ], for: service
             )
         }
@@ -463,6 +510,14 @@ extension BLEManager: CBPeripheralDelegate {
                 DispatchQueue.main.async { self.targetCharacteristic = characteristic }
             } else if characteristic.uuid == locationCharacteristicUUID {
                 DispatchQueue.main.async { self.locationCharacteristic = characteristic }
+                if characteristic.properties.contains(.notify) {
+                    peripheral.setNotifyValue(true, for: characteristic)
+                }
+                if characteristic.properties.contains(.read) {
+                    peripheral.readValue(for: characteristic)
+                }
+            } else if characteristic.uuid == peerLocationCharacteristicUUID {
+                DispatchQueue.main.async { self.peerLocationCharacteristic = characteristic }
                 if characteristic.properties.contains(.notify) {
                     peripheral.setNotifyValue(true, for: characteristic)
                 }
@@ -516,6 +571,10 @@ extension BLEManager: CBPeripheralDelegate {
             guard let data = characteristic.value else { return }
             if characteristic.uuid == locationCharacteristicUUID {
                 self.handleLocationPayload(data)
+                return
+            }
+            if characteristic.uuid == peerLocationCharacteristicUUID {
+                self.handlePeerLocationPayload(data)
                 return
             }
             self.lastReceivedData = data

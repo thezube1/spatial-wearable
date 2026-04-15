@@ -122,3 +122,8 @@ struct EventCard: View {
         return "\(s)\n\(e)"
     }
 }
+
+#Preview {
+    SelectEventView()
+        .environment(OnboardingCoordinator())
+}

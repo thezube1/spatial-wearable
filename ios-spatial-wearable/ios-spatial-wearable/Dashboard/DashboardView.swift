@@ -143,3 +143,10 @@ struct DashboardView: View {
         .shadow(color: .black.opacity(0.04), radius: 6, y: 3)
     }
 }
+
+#Preview {
+    DashboardView()
+        .environment(BLEManager())
+        .environment(AuthViewModel())
+        .environment(OnboardingCoordinator())
+}

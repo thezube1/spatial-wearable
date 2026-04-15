@@ -46,6 +46,22 @@ struct LocationTabView: View {
                         .shadow(radius: 2)
                 }
             }
+            if let peer = ble.peerLocation {
+                Annotation(peer.name, coordinate: CLLocationCoordinate2D(
+                    latitude: peer.latitude, longitude: peer.longitude)
+                ) {
+                    ZStack {
+                        Circle()
+                            .fill(Color.orange.opacity(0.25))
+                            .frame(width: 34, height: 34)
+                        Circle()
+                            .fill(Color.orange)
+                            .frame(width: 16, height: 16)
+                            .overlay(Circle().stroke(Color.white, lineWidth: 3))
+                            .shadow(radius: 2)
+                    }
+                }
+            }
         }
         .mapControls {
             MapCompass()
@@ -126,4 +142,9 @@ struct LocationTabView: View {
             "Once your wearable reconnects, its location will appear here."
         }
     }
+}
+
+#Preview {
+    LocationTabView()
+        .environment(BLEManager())
 }

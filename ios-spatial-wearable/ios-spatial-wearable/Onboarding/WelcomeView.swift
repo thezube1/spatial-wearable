@@ -124,3 +124,9 @@ struct WelcomeView: View {
         }
     }
 }
+
+#Preview {
+    WelcomeView()
+        .environment(OnboardingCoordinator())
+        .environment(AuthViewModel())
+}
