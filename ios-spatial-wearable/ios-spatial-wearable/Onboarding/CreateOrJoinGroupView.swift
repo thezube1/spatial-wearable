@@ -148,3 +148,8 @@ struct CreateOrJoinGroupView: View {
         }
     }
 }
+
+#Preview {
+    CreateOrJoinGroupView()
+        .environment(OnboardingCoordinator())
+}

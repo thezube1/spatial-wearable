@@ -81,3 +81,8 @@ struct ConfirmationView: View {
         .clipShape(RoundedRectangle(cornerRadius: OnboardingStyle.cornerRadius))
     }
 }
+
+#Preview {
+    ConfirmationView()
+        .environment(OnboardingCoordinator())
+}

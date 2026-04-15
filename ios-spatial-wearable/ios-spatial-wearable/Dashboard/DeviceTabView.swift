@@ -156,6 +156,19 @@ struct DeviceTabView: View {
     }
 }
 
+#Preview {
+    struct PreviewWrapper: View {
+        @State var device: Device?
+        @State var error: String?
+        var body: some View {
+            DeviceTabView(device: $device, errorMessage: $error)
+                .environment(BLEManager())
+                .environment(OnboardingCoordinator())
+        }
+    }
+    return PreviewWrapper()
+}
+
 private struct LabeledRow: View {
     let label: String
     let value: String

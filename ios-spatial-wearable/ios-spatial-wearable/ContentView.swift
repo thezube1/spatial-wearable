@@ -28,13 +28,20 @@ struct ContentView: View {
     /// or resume the persisted onboarding step.
     private func resolveEntryStep() async {
         guard auth.currentSession != nil else { return }
-        if hasCompletedOnboarding { return }
 
         let device = try? await APIClient.shared.getMyDevice()
-        if device == nil {
-            coordinator.step = .linkWristband
+        if device != nil {
+            // Server says this user already has a linked device — skip onboarding,
+            // even if local AppStorage was cleared (fresh install, account switch, etc.).
+            hasCompletedOnboarding = true
+            return
         }
-        // Otherwise: leave coordinator.step at whatever was persisted.
+
+        // No linked device on the server — force onboarding regardless of the
+        // locally persisted flag (handles account switches where the previous
+        // user had completed onboarding).
+        hasCompletedOnboarding = false
+        coordinator.step = .linkWristband
     }
 }
 

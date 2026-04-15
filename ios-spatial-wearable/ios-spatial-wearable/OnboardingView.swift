@@ -16,3 +16,10 @@ struct OnboardingView: View {
         }
     }
 }
+
+#Preview {
+    OnboardingView()
+        .environment(OnboardingCoordinator())
+        .environment(AuthViewModel())
+        .environment(BLEManager())
+}

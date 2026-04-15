@@ -14,6 +14,7 @@ Firmware: `arduino/10_wearable_persistent_pairing/10_wearable_persistent_pairing
 | Owner-auth | `12345678-1234-5678-1234-56781234abd0` | WRITE | Required on every reconnect once paired. iOS writes the same `user_id`; firmware compares to NVS and disconnects on mismatch. Centrals that don't write within 3 s of connecting are also disconnected. |
 | Location | `12345678-1234-5678-1234-56781234abd1` | READ, NOTIFY | 9-byte GPS payload pushed by the wearable every 15 s. Layout: `valid(u8) | lat(float32 LE) | lon(float32 LE)`. `valid=0` means no fix yet — lat/lon should be ignored. Added in firmware `12_wearable_location_ble`. |
 | Target-select | `12345678-1234-5678-1234-56781234abd2` | WRITE | Only accepted on an authed connection. iOS writes the group member the wearable should lock onto. Added in firmware `13_wearable_target_select`. |
+| Peer-location | `12345678-1234-5678-1234-56781234abd3` | READ, NOTIFY | 9-byte payload carrying the *target* peer's GPS forwarded from ESP-NOW. Same layout as Location (`valid(u8) | lat(f32 LE) | lon(f32 LE)`). Notified every ~3 s, and immediately when the target changes or clears (valid=0). Added in firmware `14_wearable_peer_location`. |
 
 ## Persistent State (NVS)
 
@@ -108,3 +109,15 @@ The target-select characteristic (`abd2`) lets the iOS app tell the wearable whi
 - Group has 1 other member → auto-write that member's MAC + display name.
 - Group has 2+ other members → user picks on the Group tab; selection persists locally in `@AppStorage("trackingTarget")`.
 - If the selected member has no `linked_device_mac`, surface a message in the UI and skip the BLE write.
+
+## Peer Location (firmware 14)
+
+The peer-location characteristic (`abd3`) streams the *currently-tracked target's* GPS to the phone so the iOS map can render the target alongside the owner's wearable.
+
+**Payload:** identical shape to the own-location characteristic (`abd1`): `valid(u8) | lat(float32 LE) | lon(float32 LE)`, total 9 bytes. `valid=0` means one of: no target is set, no ESP-NOW packets have arrived from the target recently, or the target has no GPS fix. iOS MUST drop any existing peer pin when it sees `valid=0`.
+
+**Cadence:** notified every `PEER_LOCATION_NOTIFY_INTERVAL_MS` (3 s). The interval timer is also force-reset on target save and target clear so the phone sees the transition within one loop iteration.
+
+**Naming:** the wearable does not include the target's display name in this payload. iOS already knows the target's name (it wrote it via `abd2`) and labels the peer's map pin with `BLEManager.trackingTargetName`. When the target is cleared or the connection drops, `trackingTargetName` and `peerLocation` are both reset.
+
+**iOS subscription:** `BLEManager` discovers `abd3` alongside the other service characteristics and calls `setNotifyValue(true)` during characteristic discovery. Parsed payloads populate `BLEManager.peerLocation: PeerLocation?`, which the `LocationTabView` map renders as a second (orange) annotation.

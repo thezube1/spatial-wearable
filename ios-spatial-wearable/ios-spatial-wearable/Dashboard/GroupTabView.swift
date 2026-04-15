@@ -640,3 +640,9 @@ private struct CreateGroupSheet: View {
         }
     }
 }
+
+#Preview {
+    GroupTabView()
+        .environment(BLEManager())
+        .environment(OnboardingCoordinator())
+}
