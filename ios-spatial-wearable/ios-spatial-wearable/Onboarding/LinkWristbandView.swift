@@ -5,13 +5,11 @@ struct LinkWristbandView: View {
     @Environment(BLEManager.self) private var ble
 
     /// If provided, called after a successful link instead of advancing onboarding.
-    /// Used when the view is presented as a "pair new device" sheet from the Device tab.
     var onLinked: ((String) -> Void)? = nil
 
-    @State private var statusText: String = "Searching…"
+    @State private var statusText: String = "Searching..."
     @State private var isLinking = false
     @State private var errorMessage: String?
-    @State private var dotPosition: CGFloat = 0
     @State private var selectedDeviceID: UUID?
 
     private static let devicePrefix = "SW-"
@@ -25,91 +23,124 @@ struct LinkWristbandView: View {
         }
     }
 
+    private var statusUsesAccentBlue: Bool {
+        let s = statusText.lowercased()
+        return s.contains("search") || s.contains("scan") || s.contains("connect") || s.contains("read") || s.contains("sav")
+    }
+
     var body: some View {
         ZStack {
-            OnboardingBackground()
+            LinkWristbandBackgroundView()
+            WelcomeFullScreenFilmGrain()
+                .ignoresSafeArea()
 
-            VStack(spacing: 20) {
-                Spacer(minLength: 8)
+            GeometryReader { geo in
+                let topPad = max(0, 262 - geo.safeAreaInsets.top)
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 0) {
+                        Color.clear.frame(height: topPad)
 
-                Text("Let's link your wristband.")
-                    .font(OnboardingStyle.font(24, weight: .bold))
-                    .foregroundStyle(.white)
-                    .multilineTextAlignment(.center)
+                        Text("Let's link your wristband.")
+                            .font(OnboardingStyle.font(24, weight: .bold))
+                            .foregroundStyle(.white)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: 400)
+                            .shadow(color: .black.opacity(0.25), radius: 4, x: 0, y: 1)
+                            .padding(.bottom, 58)
 
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        Capsule()
-                            .fill(Color.white.opacity(0.15))
-                            .frame(height: 10)
-                        Circle()
-                            .fill(Color.blue)
-                            .frame(width: 14, height: 14)
-                            .offset(x: dotPosition * (geo.size.width - 14))
+                        linkWristbandGraphic
+                            .padding(.bottom, 58)
+
+                        Text("Hold the side button for 5 seconds.\nRelease when the logo begins to fill.")
+                            .font(OnboardingStyle.font(16))
+                            .foregroundStyle(.white)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: 308)
+                            .padding(.bottom, 40)
+
+                        searchingIndicator
+
+                        deviceList
+                            .padding(.top, 28)
+
+                        if let errorMessage {
+                            Text(errorMessage)
+                                .font(OnboardingStyle.font(12))
+                                .foregroundStyle(.red.opacity(0.95))
+                                .frame(width: OnboardingStyle.fieldWidth, alignment: .leading)
+                                .padding(.top, 12)
+                        }
+
+                        Button {
+                            Task { await confirmSelection() }
+                        } label: {
+                            if isLinking {
+                                ProgressView().tint(.white)
+                            } else {
+                                Text(isLinking ? "Linking…" : "Confirm device")
+                            }
+                        }
+                        .buttonStyle(WelcomePrimaryButtonStyle())
+                        .disabled(!canConfirm)
+                        .padding(.top, 20)
+
+                        Button("Skip for now") {
+                            coordinator.step = .selectEvent
+                        }
+                        .font(OnboardingStyle.font(13))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .underline()
+                        .padding(.top, 16)
+                        .padding(.bottom, 32)
                     }
-                }
-                .frame(width: OnboardingStyle.fieldWidth, height: 14)
-                .onAppear {
-                    withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) {
-                        dotPosition = 1
-                    }
-                }
-
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("1. Hold the BOOT button on the wristband for 5 seconds.")
-                    Text("2. Release when the screen shows PAIRING MODE.")
-                    Text("3. Pick your wristband from the list below.")
-                }
-                .font(OnboardingStyle.font(14))
-                .foregroundStyle(.white)
-                .frame(width: OnboardingStyle.fieldWidth, alignment: .leading)
-
-                deviceList
-
-                HStack(spacing: 10) {
-                    Circle().fill(Color.blue).frame(width: 8, height: 8)
-                    Text(statusText)
-                        .font(OnboardingStyle.font(14))
-                        .foregroundStyle(.white.opacity(0.9))
-                }
-
-                if let errorMessage {
-                    Text(errorMessage)
-                        .font(OnboardingStyle.font(12))
-                        .foregroundStyle(.red.opacity(0.9))
-                        .frame(width: OnboardingStyle.fieldWidth, alignment: .leading)
+                    .frame(maxWidth: .infinity)
+                    .frame(minHeight: geo.size.height)
+                    .padding(.horizontal, 28)
                 }
 
                 Button {
-                    Task { await confirmSelection() }
+                    coordinator.step = .welcome
                 } label: {
-                    Text(isLinking ? "Linking…" : "Confirm device")
-                        .font(OnboardingStyle.font(16, weight: .semibold))
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 20, weight: .semibold))
                         .foregroundStyle(.white)
-                        .frame(width: OnboardingStyle.fieldWidth, height: 48)
-                        .background(
-                            Capsule().fill(canConfirm ? Color.blue : Color.white.opacity(0.15))
-                        )
+                        .frame(width: 28, height: 28)
                 }
-                .disabled(!canConfirm)
-
-                Button("Skip for now") {
-                    coordinator.step = .selectEvent
-                }
-                .font(OnboardingStyle.font(13))
-                .foregroundStyle(.white.opacity(0.7))
-                .padding(.bottom, 16)
+                .buttonStyle(.plain)
+                .padding(.leading, 28)
+                .padding(.top, geo.safeAreaInsets.top + 8)
             }
-            .padding()
         }
         .task {
             ble.startScanning()
-            statusText = "Searching…"
+            statusText = "Searching..."
         }
     }
 
     private var canConfirm: Bool {
         selectedDeviceID != nil && !isLinking
+    }
+
+    /// Raster mockup (`assets/wristband.png`) — full width of the screen (cancels parent horizontal padding).
+    private var linkWristbandGraphic: some View {
+        Image("WristbandMockup")
+            .resizable()
+            .interpolation(.high)
+            .scaledToFit()
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, -28)
+    }
+
+    private var searchingIndicator: some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(OnboardingStyle.figmaPrimaryBlue)
+                .frame(width: 12, height: 12)
+            Text(statusText)
+                .font(OnboardingStyle.font(18, weight: .medium))
+                .foregroundStyle(statusUsesAccentBlue ? OnboardingStyle.figmaPrimaryBlue : Color.white.opacity(0.9))
+        }
+        .frame(maxWidth: .infinity)
     }
 
     @ViewBuilder
@@ -119,9 +150,9 @@ struct LinkWristbandView: View {
             VStack(spacing: 8) {
                 if devices.isEmpty {
                     Text("Scanning for wristbands…")
-                        .font(OnboardingStyle.font(13))
-                        .foregroundStyle(.white.opacity(0.6))
-                        .padding(.vertical, 16)
+                        .font(OnboardingStyle.font(14))
+                        .foregroundStyle(.white.opacity(0.65))
+                        .padding(.vertical, 12)
                 } else {
                     ForEach(devices) { device in
                         deviceRow(device)
@@ -143,7 +174,7 @@ struct LinkWristbandView: View {
         } label: {
             HStack(spacing: 12) {
                 Image(systemName: isWearable ? "applewatch.radiowaves.left.and.right" : "dot.radiowaves.left.and.right")
-                    .foregroundStyle(isWearable ? .blue : .white.opacity(0.5))
+                    .foregroundStyle(isWearable ? OnboardingStyle.figmaPrimaryBlue : .white.opacity(0.5))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(device.name)
                         .font(OnboardingStyle.font(14, weight: isWearable ? .semibold : .regular))
@@ -154,18 +185,18 @@ struct LinkWristbandView: View {
                 }
                 Spacer()
                 if isSelected {
-                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.blue)
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(OnboardingStyle.figmaPrimaryBlue)
                 }
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .background(
                 RoundedRectangle(cornerRadius: 12)
-                    .fill(isSelected ? Color.blue.opacity(0.22) : Color.white.opacity(0.06))
+                    .fill(isSelected ? OnboardingStyle.figmaPrimaryBlue.opacity(0.18) : Color.white.opacity(0.08))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 12)
-                    .stroke(isWearable ? Color.blue.opacity(isSelected ? 0.9 : 0.5) : Color.clear,
+                    .stroke(isWearable ? OnboardingStyle.figmaPrimaryBlue.opacity(isSelected ? 0.9 : 0.45) : Color.clear,
                             lineWidth: 1.5)
             )
         }
@@ -180,7 +211,7 @@ struct LinkWristbandView: View {
         errorMessage = nil
         defer { isLinking = false }
 
-        statusText = "Connecting…"
+        statusText = "Connecting..."
         ble.connect(to: device)
 
         for _ in 0..<30 {
