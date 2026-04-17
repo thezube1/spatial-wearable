@@ -8,12 +8,6 @@ struct GroupSetupView: View {
     @State private var isSubmitting = false
     @State private var showDiscardAlert = false
 
-    private let gridColumns = [
-        GridItem(.fixed(100), spacing: 18),
-        GridItem(.fixed(100), spacing: 18),
-        GridItem(.fixed(100), spacing: 18)
-    ]
-
     var everyone: [UserProfile] {
         var list: [UserProfile] = []
         if let me { list.append(me) }
@@ -23,87 +17,122 @@ struct GroupSetupView: View {
 
     var body: some View {
         @Bindable var coordinator = coordinator
-        ZStack {
-            GroupSetupBackgroundView()
-            WelcomeFullScreenFilmGrain()
-                .ignoresSafeArea()
+        return ZStack {
+            OnboardingBackground()
 
-            GeometryReader { geo in
-                let topPad = max(0, 135 - geo.safeAreaInsets.top)
-                ZStack(alignment: .topLeading) {
-                    VStack(spacing: 0) {
-                        ScrollView(showsIndicators: false) {
-                            VStack(spacing: 0) {
-                                Color.clear.frame(height: topPad)
-
-                                Text("Let's set your group up.")
-                                    .font(OnboardingStyle.font(24, weight: .bold))
-                                    .foregroundStyle(.white)
-                                    .multilineTextAlignment(.center)
-                                    .frame(maxWidth: 400)
-                                    .shadow(color: .black.opacity(0.2), radius: 4, x: 0, y: 1)
-                                    .padding(.bottom, 21)
-
-                                groupNameCard(groupName: $coordinator.groupName, coordinator: coordinator)
-                                    .padding(.bottom, 31)
-
-                                Text("Select a group leader who will keep an eye out for everyone at all times.")
-                                    .font(OnboardingStyle.font(16))
-                                    .foregroundStyle(.white)
-                                    .multilineTextAlignment(.center)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                    .padding(.bottom, 20)
-
-                                LazyVGrid(columns: gridColumns, spacing: 20) {
-                                    ForEach(everyone) { person in
-                                        leaderGridCell(person: person, coordinator: coordinator)
-                                    }
-                                }
-                                .frame(maxWidth: OnboardingStyle.fieldWidth)
-
-                                if let errorMessage {
-                                    Text(errorMessage)
-                                        .font(OnboardingStyle.font(13))
-                                        .foregroundStyle(.red.opacity(0.95))
-                                        .multilineTextAlignment(.center)
-                                        .padding(.top, 16)
-                                }
-
-                                Color.clear.frame(height: 24)
-                            }
-                            .padding(.horizontal, 28)
-                            .frame(minWidth: 0, maxWidth: .infinity)
-                        }
-
-                        Button {
-                            Task { await submit() }
-                        } label: {
-                            if isSubmitting {
-                                ProgressView().tint(.white)
-                            } else {
-                                Text("Continue")
-                            }
-                        }
-                        .buttonStyle(WelcomePrimaryButtonStyle())
-                        .disabled(coordinator.groupName.isEmpty || isSubmitting)
-                        .opacity(coordinator.groupName.isEmpty ? 0.45 : 1)
-                        .padding(.horizontal, 28)
-                        .padding(.top, 8)
-                        .padding(.bottom, max(16, geo.safeAreaInsets.bottom + 8))
-                    }
-
+            VStack(spacing: 18) {
+                HStack {
                     Button {
                         showDiscardAlert = true
                     } label: {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 20, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(width: 28, height: 28)
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.left")
+                            Text("Back")
+                        }
+                        .font(OnboardingStyle.font(14, weight: .semibold))
+                        .foregroundStyle(.white)
                     }
-                    .buttonStyle(.plain)
-                    .padding(.leading, 28)
-                    .padding(.top, geo.safeAreaInsets.top + 12)
+                    Spacer()
                 }
+                .frame(width: OnboardingStyle.fieldWidth)
+                .padding(.top, 16)
+
+                Text("Let's set your group up.")
+                    .font(OnboardingStyle.font(24, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(.top, 4)
+
+                // Group name card
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 2) {
+                        Text("Group name").font(OnboardingStyle.font(12, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.85))
+                        Text("*").foregroundStyle(.red)
+                    }
+                    HStack(spacing: 12) {
+                        ZStack {
+                            Circle().fill(Color.white.opacity(0.18)).frame(width: 44, height: 44)
+                            Image(systemName: "pencil").foregroundStyle(.white)
+                        }
+                        TextField("", text: $coordinator.groupName,
+                                  prompt: Text("Required — e.g. \"Rave crew\"")
+                                    .foregroundColor(.white.opacity(0.6)))
+                            .font(OnboardingStyle.font(15, weight: .bold))
+                            .foregroundStyle(.white)
+                    }
+                    .padding(12)
+                    .background(Color.white.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: OnboardingStyle.cornerRadius))
+                }
+                .frame(width: OnboardingStyle.fieldWidth, alignment: .leading)
+
+                // Event card (configurable — routes back to event picker).
+                Button {
+                    coordinator.returnToGroupSetupAfterEvent = true
+                    coordinator.step = .selectEvent
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "calendar")
+                            .foregroundStyle(.white)
+                            .frame(width: 28)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Event")
+                                .font(OnboardingStyle.font(11))
+                                .foregroundStyle(.white.opacity(0.7))
+                            Text(coordinator.selectedEvent?.name ?? "Choose event")
+                                .font(OnboardingStyle.font(14, weight: .semibold))
+                                .foregroundStyle(.white)
+                        }
+                        Spacer()
+                        Text("Change")
+                            .font(OnboardingStyle.font(12, weight: .semibold))
+                            .foregroundStyle(.blue)
+                    }
+                    .padding(12)
+                    .frame(width: OnboardingStyle.fieldWidth)
+                    .background(Color.white.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: OnboardingStyle.cornerRadius))
+                }
+                .buttonStyle(.plain)
+
+                VStack(spacing: 4) {
+                    Text("Tap an avatar to choose a group leader.")
+                        .font(OnboardingStyle.font(13, weight: .semibold))
+                        .foregroundStyle(.white)
+                    Text("Defaults to you (the group creator). The leader keeps an eye out for everyone.")
+                        .font(OnboardingStyle.font(12))
+                        .foregroundStyle(.white.opacity(0.75))
+                }
+                .multilineTextAlignment(.center)
+                .frame(width: OnboardingStyle.fieldWidth)
+
+                // Avatar grid
+                let columns = [GridItem(.adaptive(minimum: 80), spacing: 10)]
+                LazyVGrid(columns: columns, spacing: 16) {
+                    ForEach(everyone) { person in
+                        avatarTile(person)
+                    }
+                }
+                .frame(width: OnboardingStyle.fieldWidth)
+
+                if let errorMessage {
+                    Text(errorMessage)
+                        .font(OnboardingStyle.font(12))
+                        .foregroundStyle(.red.opacity(0.9))
+                }
+
+                Spacer()
+
+                Button {
+                    Task { await submit() }
+                } label: {
+                    if isSubmitting { ProgressView().tint(.white) }
+                    else { Text("Continue") }
+                }
+                .buttonStyle(PrimaryBlueButtonStyle())
+                .disabled(coordinator.groupName.isEmpty || isSubmitting)
+                .opacity(coordinator.groupName.isEmpty ? 0.5 : 1)
+                .padding(.bottom, 24)
             }
         }
         .task { await loadMe() }
@@ -115,111 +144,44 @@ struct GroupSetupView: View {
         }
     }
 
-    private func groupNameCard(groupName: Binding<String>, coordinator: OnboardingCoordinator) -> some View {
-        let groupGlyphId = "group:\(groupName.wrappedValue)"
-        return HStack(alignment: .center, spacing: 10) {
-            ZStack(alignment: .bottomTrailing) {
-                ZStack {
-                    Circle()
-                        .fill(Color(white: 0.85))
-                        .frame(width: 50, height: 50)
-                    Image(systemName: OnboardingStyle.avatarSymbol(forUserId: groupGlyphId))
-                        .font(.system(size: 22))
-                        .foregroundStyle(.black.opacity(0.45))
-                }
-                Circle()
-                    .fill(OnboardingStyle.figmaPrimaryBlue)
-                    .frame(width: 22, height: 22)
-                    .overlay(
-                        Image(systemName: "pencil")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.white)
-                    )
-                    .offset(x: 4, y: 4)
-            }
-
-            VStack(alignment: .leading, spacing: 5) {
-                TextField(
-                    "",
-                    text: groupName,
-                    prompt: Text("Group name")
-                        .foregroundColor(.black.opacity(0.45))
-                )
-                .font(OnboardingStyle.font(18, weight: .semibold))
-                .foregroundStyle(.black)
-                .textInputAutocapitalization(.words)
-
-                Button {
-                    coordinator.returnToGroupSetupAfterEvent = true
-                    coordinator.step = .selectEvent
-                } label: {
-                    Text(eventSubtitle(selectedEvent: coordinator.selectedEvent))
-                        .font(OnboardingStyle.font(18))
-                        .foregroundStyle(.black.opacity(0.92))
-                        .multilineTextAlignment(.leading)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .buttonStyle(.plain)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(10)
-        .frame(width: OnboardingStyle.fieldWidth)
-        .frame(minHeight: 81, alignment: .center)
-        .background(Color.white.opacity(0.5))
-        .clipShape(RoundedRectangle(cornerRadius: OnboardingStyle.cornerRadius))
-    }
-
-    private func eventSubtitle(selectedEvent: Event?) -> String {
-        if let name = selectedEvent?.name, !name.isEmpty {
-            return "We're headed to \(name)!"
-        }
-        return "Choose an event…"
-    }
-
-    private func leaderGridCell(person: UserProfile, coordinator: OnboardingCoordinator) -> some View {
-        let isLeader = coordinator.leaderId == person.id
-        let isMe = me?.id == person.id
-        let display = isMe ? "You" : (person.display_name ?? person.username ?? "—")
-        let sym = OnboardingStyle.avatarSymbol(forUserId: person.id)
-        let dot = OnboardingStyle.memberStatusColor(forUserId: person.id)
-
-        return VStack(spacing: 2) {
-            ZStack {
-                Circle()
-                    .fill(Color(white: 0.85))
-                    .frame(width: 100, height: 100)
-                Image(systemName: sym)
-                    .font(.system(size: 36))
-                    .foregroundStyle(.black.opacity(0.4))
-                Circle()
-                    .stroke(isLeader ? OnboardingStyle.figmaPrimaryBlue : Color.clear, lineWidth: 3)
-                    .frame(width: 100, height: 100)
-            }
-
-            HStack(spacing: 2) {
-                Circle()
-                    .fill(dot)
-                    .frame(width: 9, height: 9)
-                Text(display)
-                    .font(OnboardingStyle.font(14, weight: .medium))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-            }
-            .frame(width: 100)
-        }
-        .contentShape(Rectangle())
-        .onTapGesture { coordinator.leaderId = person.id }
-    }
-
     private func discardAndGoBack() {
         coordinator.groupName = ""
         coordinator.selectedMembers = []
         coordinator.leaderId = nil
         coordinator.createdGroup = nil
         coordinator.step = .createOrJoin
+    }
+
+    private func avatarTile(_ person: UserProfile) -> some View {
+        let isLeader = coordinator.leaderId == person.id
+        let isMe = me?.id == person.id
+        return VStack(spacing: 6) {
+            ZStack(alignment: .topTrailing) {
+                Circle()
+                    .fill(Color.white.opacity(0.2))
+                    .frame(width: 60, height: 60)
+                    .overlay(Image(systemName: "person.fill").foregroundStyle(.white.opacity(0.7)))
+                    .overlay(
+                        Circle().stroke(isLeader ? Color.blue : Color.clear, lineWidth: 3)
+                    )
+                if isLeader {
+                    Image(systemName: "star.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.white)
+                        .padding(5)
+                        .background(Circle().fill(Color.blue))
+                        .offset(x: 4, y: -4)
+                }
+            }
+            Text(isMe ? "You" : (person.display_name ?? person.username ?? "—"))
+                .font(OnboardingStyle.font(11, weight: isLeader ? .semibold : .regular))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+            Text(isLeader ? "Leader" : " ")
+                .font(OnboardingStyle.font(10, weight: .semibold))
+                .foregroundStyle(isLeader ? .blue : .clear)
+        }
+        .onTapGesture { coordinator.leaderId = person.id }
     }
 
     private func loadMe() async {
@@ -249,7 +211,7 @@ struct GroupSetupView: View {
                 leaderId: coordinator.leaderId
             )
             coordinator.createdGroup = group
-            coordinator.step = .selectMeetingPoint
+            coordinator.step = .confirmation
         } catch {
             errorMessage = error.localizedDescription
         }

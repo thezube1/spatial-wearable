@@ -3,7 +3,7 @@ import Observation
 import SwiftUI
 
 enum OnboardingStep: String, CaseIterable {
-    case welcome, linkWristband, selectEvent, createOrJoin, groupSetup, selectMeetingPoint, confirmation
+    case welcome, linkWristband, selectEvent, createOrJoin, groupSetup, confirmation
 }
 
 @Observable
@@ -25,11 +25,6 @@ final class OnboardingCoordinator {
     var leaderId: String?
     var createdGroup: GroupDetail?
     var joinCode: String = ""
-
-    /// Normalized tap position on the festival map image (0…1).
-    var meetingPointX: CGFloat = 0.481
-    var meetingPointY: CGFloat = 0.403
-    var meetingPointName: String = ""
 
     // When true, SelectEventView's Continue routes back to groupSetup instead of createOrJoin.
     var returnToGroupSetupAfterEvent: Bool = false
@@ -66,8 +61,5 @@ final class OnboardingCoordinator {
         leaderId = nil
         createdGroup = nil
         joinCode = ""
-        meetingPointX = 0.481
-        meetingPointY = 0.403
-        meetingPointName = ""
     }
 }

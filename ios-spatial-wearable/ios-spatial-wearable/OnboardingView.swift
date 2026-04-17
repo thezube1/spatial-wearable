@@ -11,9 +11,8 @@ struct OnboardingView: View {
         case .linkWristband:  LinkWristbandView()
         case .selectEvent:    SelectEventView()
         case .createOrJoin:   CreateOrJoinGroupView()
-        case .groupSetup:           GroupSetupView()
-        case .selectMeetingPoint:  SelectMeetingPointView()
-        case .confirmation:         ConfirmationView()
+        case .groupSetup:     GroupSetupView()
+        case .confirmation:   ConfirmationView()
         }
     }
 }

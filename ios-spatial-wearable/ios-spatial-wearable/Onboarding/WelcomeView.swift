@@ -10,130 +10,105 @@ struct WelcomeView: View {
     @State private var password = ""
     @State private var isLoginMode = false
 
-    /// Figma `113:29`: centered, 24pt line height, max width 178; sign-up copy matches artboard.
-    @ViewBuilder
-    private var welcomeTitleView: some View {
-        if isLoginMode {
-            Text("Welcome back")
-                .font(OnboardingStyle.font(24, weight: .bold))
-                .foregroundStyle(.white)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 178)
-                .lineSpacing(0)
-                .shadow(color: .black.opacity(0.25), radius: 4, x: 0, y: 1)
-        } else {
-            Text("Welcome to Tether")
-                .font(OnboardingStyle.font(24, weight: .bold))
-                .foregroundStyle(.white)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 240)
-                .lineSpacing(0)
-                .shadow(color: .black.opacity(0.25), radius: 4, x: 0, y: 1)
-        }
+    private var appDisplayName: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+            ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String
+            ?? "Spatial"
+    }
+
+    private var welcomeTitle: String {
+        if isLoginMode { return "Welcome back" }
+        return "Welcome to \(appDisplayName)"
     }
 
     var body: some View {
         ZStack {
             WelcomeHeroBackground()
 
-            GeometryReader { geo in
-                let topInset = geo.safeAreaInsets.top
-                let bottomInset = geo.safeAreaInsets.bottom
-                /// Logo top at y=132 in Figma (full frame).
-                let logoTopPadding = max(0, 132 - topInset)
-                /// Space below button in Figma: 852 − (653 + 40) = 159.
-                let bottomPadding = max(24, 159 - bottomInset)
+            ScrollView {
+                VStack(spacing: 0) {
+                    Spacer(minLength: 56)
 
-                ScrollView(showsIndicators: false) {
-                    VStack(spacing: 0) {
-                        Color.clear.frame(height: logoTopPadding)
+                    ZStack {
+                        Circle()
+                            .fill(Color.white)
+                            .frame(width: 107, height: 107)
+                        Image("WelcomeLogo")
+                            .resizable()
+                            .interpolation(.high)
+                            .scaledToFit()
+                            .frame(width: 62, height: 62)
+                    }
+                    .padding(.bottom, 20)
 
-                        ZStack {
-                            Circle()
-                                .fill(Color.white.opacity(0.78))
-                                .frame(width: 107, height: 107)
-                            Image("WelcomeLogo")
-                                .renderingMode(.original)
-                                .resizable()
-                                .interpolation(.high)
-                                .scaledToFit()
-                                .frame(width: 62, height: 62)
+                    Text(welcomeTitle)
+                        .font(OnboardingStyle.font(24, weight: .bold))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+                        .shadow(color: .black.opacity(0.35), radius: 6, x: 0, y: 2)
+                        .padding(.horizontal, 28)
+                        .padding(.bottom, 32)
+
+                    VStack(spacing: 30) {
+                        if !isLoginMode {
+                            TextField("", text: $name, prompt: Text("Name").foregroundColor(.black.opacity(0.45)))
+                                .textContentType(.name)
+                                .welcomeSignUpField()
                         }
-                        /// 262 − (132 + 107) = 23
-                        .padding(.bottom, 23)
-
-                        welcomeTitleView
-                            /// 321 − (262 + 24) = 35
-                            .padding(.bottom, 35)
-
-                        VStack(spacing: 30) {
-                            if !isLoginMode {
-                                TextField("", text: $name, prompt: Text("Name").foregroundColor(.black.opacity(0.55)))
-                                    .textContentType(.name)
-                                    .welcomeSignUpField()
-                            }
-                            TextField("", text: $email, prompt: Text("Email").foregroundColor(.black.opacity(0.55)))
-                                .textContentType(.emailAddress)
-                                .keyboardType(.emailAddress)
+                        TextField("", text: $email, prompt: Text("Email").foregroundColor(.black.opacity(0.45)))
+                            .textContentType(.emailAddress)
+                            .keyboardType(.emailAddress)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .welcomeSignUpField()
+                        if !isLoginMode {
+                            TextField("", text: $username, prompt: Text("Username").foregroundColor(.black.opacity(0.45)))
                                 .textInputAutocapitalization(.never)
                                 .autocorrectionDisabled()
                                 .welcomeSignUpField()
-                            if !isLoginMode {
-                                TextField("", text: $username, prompt: Text("Username").foregroundColor(.black.opacity(0.55)))
-                                    .textInputAutocapitalization(.never)
-                                    .autocorrectionDisabled()
-                                    .welcomeSignUpField()
-                            }
-                            SecureField("", text: $password, prompt: Text("Password").foregroundColor(.black.opacity(0.55)))
-                                .welcomeSignUpField()
                         }
-
-                        if let err = auth.errorMessage {
-                            Text(err)
-                                .font(OnboardingStyle.font(12))
-                                .foregroundStyle(.red.opacity(0.95))
-                                .frame(width: OnboardingStyle.fieldWidth, alignment: .leading)
-                                .padding(.top, 16)
-                        }
-
-                        /// 653 − (321 + 250) = 82
-                        Color.clear
-                            .frame(height: auth.errorMessage == nil ? 82 : 56)
-
-                        Button {
-                            Task { await submit() }
-                        } label: {
-                            if auth.isLoading {
-                                ProgressView().tint(.white)
-                            } else {
-                                Text("Get Started")
-                            }
-                        }
-                        .buttonStyle(WelcomePrimaryButtonStyle())
-                        .disabled(auth.isLoading)
-
-                        Button {
-                            isLoginMode.toggle()
-                        } label: {
-                            Text(isLoginMode
-                                 ? "New here? Create an account"
-                                 : "Already have an account? Log in")
-                                .font(OnboardingStyle.font(13))
-                                .foregroundStyle(.white.opacity(0.92))
-                                .underline()
-                        }
-                        .padding(.top, 20)
-
-                        Color.clear.frame(height: bottomPadding)
+                        SecureField("", text: $password, prompt: Text("Password").foregroundColor(.black.opacity(0.45)))
+                            .welcomeSignUpField()
                     }
-                    .frame(maxWidth: .infinity)
-                    .frame(minHeight: geo.size.height)
-                    .padding(.horizontal, 28)
-                }
-            }
 
-            WelcomeFullScreenFilmGrain()
-                .ignoresSafeArea()
+                    if let err = auth.errorMessage {
+                        Text(err)
+                            .font(OnboardingStyle.font(12))
+                            .foregroundStyle(.red.opacity(0.95))
+                            .frame(width: OnboardingStyle.fieldWidth, alignment: .leading)
+                            .padding(.top, 16)
+                    }
+
+                    Button {
+                        Task { await submit() }
+                    } label: {
+                        if auth.isLoading {
+                            ProgressView().tint(.white)
+                        } else {
+                            Text("Get Started")
+                        }
+                    }
+                    .buttonStyle(WelcomePrimaryButtonStyle())
+                    .disabled(auth.isLoading)
+                    .padding(.top, auth.errorMessage == nil ? 40 : 24)
+
+                    Button {
+                        isLoginMode.toggle()
+                    } label: {
+                        Text(isLoginMode
+                             ? "New here? Create an account"
+                             : "Already have an account? Log in")
+                            .font(OnboardingStyle.font(13))
+                            .foregroundStyle(.white.opacity(0.92))
+                            .underline()
+                    }
+                    .padding(.top, 20)
+
+                    Spacer(minLength: 48)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 28)
+            }
         }
     }
 

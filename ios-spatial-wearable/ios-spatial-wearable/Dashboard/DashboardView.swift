@@ -2,45 +2,27 @@ import SwiftUI
 
 struct DashboardView: View {
     @Environment(BLEManager.self) private var ble
+    @Environment(AuthViewModel.self) private var auth
     @Environment(OnboardingCoordinator.self) private var coordinator
+    @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
 
     @State private var device: Device?
     @State private var errorMessage: String?
-    @State private var selectedTab: DashboardTab = .event
-
-    private enum DashboardTab: String, CaseIterable {
-        case event = "Event"
-        case group = "Group"
-        case device = "Device"
-    }
 
     var body: some View {
-        ZStack {
-            DashboardBackgroundView()
-            WelcomeFullScreenFilmGrain()
-                .ignoresSafeArea()
+        TabView {
+            homeTab
+                .tabItem { Label("Home", systemImage: "house.fill") }
 
-            VStack(spacing: 0) {
-                topLogo
-                    .padding(.top, 18)
-                    .padding(.bottom, 8)
+            GroupTabView()
+                .tabItem { Label("Group", systemImage: "person.3.fill") }
 
-                Group {
-                    switch selectedTab {
-                    case .event:
-                        EventTabView(group: coordinator.createdGroup, meetingPointName: coordinator.meetingPointName)
-                    case .group:
-                        GroupTabView(group: coordinator.createdGroup)
-                    case .device:
-                        DeviceTabView(device: $device, errorMessage: $errorMessage)
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            LocationTabView()
+                .tabItem { Label("Map", systemImage: "map.fill") }
 
-                tabStrip
-            }
+            DeviceTabView(device: $device, errorMessage: $errorMessage)
+                .tabItem { Label("Device", systemImage: "applewatch") }
         }
-        .ignoresSafeArea(edges: .bottom)
         .task {
             device = try? await APIClient.shared.getMyDevice()
             if let g = try? await APIClient.shared.getMyGroup() {
@@ -79,36 +61,86 @@ struct DashboardView: View {
         }
     }
 
-    private var topLogo: some View {
-        ZStack {
-            Circle()
-                .fill(Color.white.opacity(0.5))
-                .frame(width: 34, height: 34)
-            Image("WelcomeLogo")
-                .resizable()
-                .scaledToFit()
-                .frame(width: 18, height: 18)
-                .foregroundStyle(OnboardingStyle.figmaPrimaryBlue)
+    private var homeTab: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 16) {
+                    Text("Dashboard")
+                        .font(.largeTitle.bold())
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    eventCard
+                    groupCard
+
+                    Button(role: .destructive) {
+                        Task {
+                            await auth.signOut()
+                            hasCompletedOnboarding = false
+                            coordinator.reset()
+                        }
+                    } label: {
+                        Text("Sign Out")
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                    }
+                    .buttonStyle(.bordered)
+                    .padding(.top, 12)
+                }
+                .padding(20)
+            }
+            .background(Color(.systemGroupedBackground))
+            .toolbar(.hidden, for: .navigationBar)
         }
     }
 
-    private var tabStrip: some View {
-        HStack {
-            ForEach(DashboardTab.allCases, id: \.rawValue) { tab in
-                Button {
-                    selectedTab = tab
-                } label: {
-                    Text(tab.rawValue)
-                        .font(OnboardingStyle.font(18))
-                        .foregroundStyle(selectedTab == tab ? OnboardingStyle.figmaPrimaryBlue : Color.black.opacity(0.35))
-                        .frame(maxWidth: .infinity)
+    private var eventCard: some View {
+        card(title: "Event") {
+            if let e = coordinator.selectedEvent ?? coordinator.createdGroup?.event {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(e.name).font(.headline)
+                    if let v = e.venue { Text(v).foregroundStyle(.secondary).font(.subheadline) }
+                    if let c = e.category { Text(c).foregroundStyle(.secondary).font(.caption) }
                 }
-                .buttonStyle(.plain)
+            } else {
+                Text("No event selected").foregroundStyle(.secondary)
             }
         }
-        .frame(height: 48)
-        .padding(.bottom, 4)
-        .background(Color.white.opacity(0.75))
+    }
+
+    private var groupCard: some View {
+        card(title: "Group") {
+            if let g = coordinator.createdGroup {
+                HStack(spacing: 12) {
+                    ZStack {
+                        ForEach(Array(g.members.prefix(4).enumerated()), id: \.offset) { idx, _ in
+                            Circle()
+                                .fill(Color.blue.opacity(0.3))
+                                .frame(width: 30, height: 30)
+                                .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2))
+                                .offset(x: CGFloat(idx) * 16)
+                        }
+                    }
+                    .frame(height: 30)
+                    VStack(alignment: .leading) {
+                        Text(g.name).font(.headline)
+                        Text("\(g.members.count) members").foregroundStyle(.secondary).font(.caption)
+                    }
+                    Spacer()
+                }
+            } else {
+                Text("No group").foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func card<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(.background, in: RoundedRectangle(cornerRadius: 16))
+        .shadow(color: .black.opacity(0.04), radius: 6, y: 3)
     }
 }
 
