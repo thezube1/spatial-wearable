@@ -27,80 +27,91 @@ struct LinkWristbandView: View {
 
     var body: some View {
         ZStack {
-            OnboardingBackground()
+            LinkWristbandBackgroundView()
 
-            VStack(spacing: 20) {
-                Spacer(minLength: 8)
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 20) {
+                    Spacer(minLength: 8)
 
-                Text("Let's link your wristband.")
-                    .font(OnboardingStyle.font(24, weight: .bold))
-                    .foregroundStyle(.white)
-                    .multilineTextAlignment(.center)
-
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        Capsule()
-                            .fill(Color.white.opacity(0.15))
-                            .frame(height: 10)
-                        Circle()
-                            .fill(Color.blue)
-                            .frame(width: 14, height: 14)
-                            .offset(x: dotPosition * (geo.size.width - 14))
-                    }
-                }
-                .frame(width: OnboardingStyle.fieldWidth, height: 14)
-                .onAppear {
-                    withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) {
-                        dotPosition = 1
-                    }
-                }
-
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("1. Hold the BOOT button on the wristband for 5 seconds.")
-                    Text("2. Release when the screen shows PAIRING MODE.")
-                    Text("3. Pick your wristband from the list below.")
-                }
-                .font(OnboardingStyle.font(14))
-                .foregroundStyle(.white)
-                .frame(width: OnboardingStyle.fieldWidth, alignment: .leading)
-
-                deviceList
-
-                HStack(spacing: 10) {
-                    Circle().fill(Color.blue).frame(width: 8, height: 8)
-                    Text(statusText)
-                        .font(OnboardingStyle.font(14))
-                        .foregroundStyle(.white.opacity(0.9))
-                }
-
-                if let errorMessage {
-                    Text(errorMessage)
-                        .font(OnboardingStyle.font(12))
-                        .foregroundStyle(.red.opacity(0.9))
-                        .frame(width: OnboardingStyle.fieldWidth, alignment: .leading)
-                }
-
-                Button {
-                    Task { await confirmSelection() }
-                } label: {
-                    Text(isLinking ? "Linking…" : "Confirm device")
-                        .font(OnboardingStyle.font(16, weight: .semibold))
+                    Text("Let's link your wristband.")
+                        .font(OnboardingStyle.font(24, weight: .bold))
                         .foregroundStyle(.white)
-                        .frame(width: OnboardingStyle.fieldWidth, height: 48)
-                        .background(
-                            Capsule().fill(canConfirm ? Color.blue : Color.white.opacity(0.15))
-                        )
-                }
-                .disabled(!canConfirm)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 400)
+                        .shadow(color: .black.opacity(0.25), radius: 4, x: 0, y: 1)
 
-                Button("Skip for now") {
-                    coordinator.step = .selectEvent
+                    linkWristbandGraphic
+
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule()
+                                .fill(Color.white.opacity(0.15))
+                                .frame(height: 10)
+                            Circle()
+                                .fill(OnboardingStyle.figmaPrimaryBlue)
+                                .frame(width: 14, height: 14)
+                                .offset(x: dotPosition * (geo.size.width - 14))
+                        }
+                    }
+                    .frame(width: OnboardingStyle.fieldWidth, height: 14)
+                    .onAppear {
+                        withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) {
+                            dotPosition = 1
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("1. Hold the BOOT button on the wristband for 5 seconds.")
+                        Text("2. Release when the screen shows PAIRING MODE.")
+                        Text("3. Pick your wristband from the list below.")
+                    }
+                    .font(OnboardingStyle.font(14))
+                    .foregroundStyle(.white)
+                    .frame(width: OnboardingStyle.fieldWidth, alignment: .leading)
+
+                    deviceList
+
+                    HStack(spacing: 10) {
+                        Circle()
+                            .fill(OnboardingStyle.figmaPrimaryBlue)
+                            .frame(width: 8, height: 8)
+                        Text(statusText)
+                            .font(OnboardingStyle.font(14))
+                            .foregroundStyle(.white.opacity(0.9))
+                    }
+
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .font(OnboardingStyle.font(12))
+                            .foregroundStyle(.red.opacity(0.9))
+                            .frame(width: OnboardingStyle.fieldWidth, alignment: .leading)
+                    }
+
+                    Button {
+                        Task { await confirmSelection() }
+                    } label: {
+                        if isLinking {
+                            ProgressView().tint(.white)
+                        } else {
+                            Text("Confirm device")
+                        }
+                    }
+                    .buttonStyle(WelcomePrimaryButtonStyle())
+                    .disabled(!canConfirm)
+
+                    Button("Skip for now") {
+                        coordinator.step = .selectEvent
+                    }
+                    .font(OnboardingStyle.font(13))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .underline()
+                    .padding(.bottom, 24)
                 }
-                .font(OnboardingStyle.font(13))
-                .foregroundStyle(.white.opacity(0.7))
-                .padding(.bottom, 16)
+                .padding()
             }
-            .padding()
+
+            WelcomeFullScreenFilmGrain()
+                .ignoresSafeArea()
         }
         .task {
             ble.startScanning()
@@ -110,6 +121,16 @@ struct LinkWristbandView: View {
 
     private var canConfirm: Bool {
         selectedDeviceID != nil && !isLinking
+    }
+
+    /// Raster mockup (`WristbandMockup`) — full-bleed to match the hero illustration in Figma.
+    private var linkWristbandGraphic: some View {
+        Image("WristbandMockup")
+            .resizable()
+            .interpolation(.high)
+            .scaledToFit()
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, -16)
     }
 
     @ViewBuilder
@@ -143,7 +164,7 @@ struct LinkWristbandView: View {
         } label: {
             HStack(spacing: 12) {
                 Image(systemName: isWearable ? "applewatch.radiowaves.left.and.right" : "dot.radiowaves.left.and.right")
-                    .foregroundStyle(isWearable ? .blue : .white.opacity(0.5))
+                    .foregroundStyle(isWearable ? OnboardingStyle.figmaPrimaryBlue : .white.opacity(0.5))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(device.name)
                         .font(OnboardingStyle.font(14, weight: isWearable ? .semibold : .regular))
@@ -154,18 +175,19 @@ struct LinkWristbandView: View {
                 }
                 Spacer()
                 if isSelected {
-                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.blue)
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(OnboardingStyle.figmaPrimaryBlue)
                 }
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .background(
                 RoundedRectangle(cornerRadius: 12)
-                    .fill(isSelected ? Color.blue.opacity(0.22) : Color.white.opacity(0.06))
+                    .fill(isSelected ? OnboardingStyle.figmaPrimaryBlue.opacity(0.18) : Color.white.opacity(0.08))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 12)
-                    .stroke(isWearable ? Color.blue.opacity(isSelected ? 0.9 : 0.5) : Color.clear,
+                    .stroke(isWearable ? OnboardingStyle.figmaPrimaryBlue.opacity(isSelected ? 0.9 : 0.45) : Color.clear,
                             lineWidth: 1.5)
             )
         }

@@ -16,30 +16,40 @@ struct DeviceTabView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 16) {
-                    Text("Device")
-                        .font(.largeTitle.bold())
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    if mac != nil {
-                        infoCard
-                        actionCard
-                    } else {
-                        emptyCard
+        ScrollView(showsIndicators: false) {
+            VStack(spacing: 16) {
+                titleCard
+
+                if mac != nil {
+                    connectionRow
+                    if let mac {
+                        statusRow(label: "MAC",
+                                  valueText: Text(mac).font(OnboardingStyle.font(15, weight: .semibold).monospaced()))
+                    }
+                    if let linkedAt = device?.linked_at {
+                        statusRow(label: "Linked",
+                                  valueText: Text(linkedAt).font(OnboardingStyle.font(16, weight: .semibold)))
+                    }
+                    if ble.connectionState == .connected, ble.rssi != 0 {
+                        statusRow(label: "Signal",
+                                  valueText: Text("\(ble.rssi) dBm").font(OnboardingStyle.font(16, weight: .semibold)))
                     }
 
-                    if let errorMessage {
-                        Text(errorMessage)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+                    actionButtons
+                } else {
+                    emptyCard
                 }
-                .padding(20)
+
+                if let errorMessage {
+                    Text(errorMessage)
+                        .font(OnboardingStyle.font(12))
+                        .foregroundStyle(.red.opacity(0.95))
+                        .frame(width: OnboardingStyle.fieldWidth, alignment: .leading)
+                }
             }
-            .background(Color(.systemGroupedBackground))
-            .toolbar(.hidden, for: .navigationBar)
+            .padding(.horizontal, 28)
+            .padding(.top, 10)
+            .padding(.bottom, 20)
         }
         .sheet(isPresented: $showPairSheet) {
             NavigationStack {
@@ -68,66 +78,106 @@ struct DeviceTabView: View {
         }
     }
 
-    private var infoCard: some View {
-        card(title: "Linked Wristband") {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 8) {
-                    Circle().fill(ble.connectionState.color).frame(width: 8, height: 8)
-                    Text(ble.connectionState.label).font(.subheadline)
-                }
-                if let mac {
-                    LabeledRow(label: "MAC", value: mac, mono: true)
-                }
-                if let linkedAt = device?.linked_at {
-                    LabeledRow(label: "Linked", value: linkedAt, mono: false)
-                }
-                if ble.connectionState == .connected, ble.rssi != 0 {
-                    LabeledRow(label: "Signal", value: "\(ble.rssi) dBm", mono: false)
-                }
-            }
+    private var titleCard: some View {
+        HStack {
+            Text("Device Status")
+                .font(OnboardingStyle.font(17, weight: .semibold))
+                .foregroundStyle(.black.opacity(0.6))
+            Spacer()
         }
+        .frame(width: OnboardingStyle.fieldWidth)
     }
 
-    private var actionCard: some View {
-        card(title: "Actions") {
-            VStack(spacing: 10) {
-                Button {
-                    showPairSheet = true
-                } label: {
-                    Label("Pair a different wristband", systemImage: "plus.circle")
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                }
-                .buttonStyle(.bordered)
-
-                Button(role: .destructive) {
-                    showUnlinkConfirm = true
-                } label: {
-                    Label(isUnlinking ? "Unlinking…" : "Unlink this wristband",
-                          systemImage: "xmark.circle")
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                }
-                .buttonStyle(.bordered)
-                .disabled(isUnlinking)
-            }
+    private var connectionRow: some View {
+        let c = ble.connectionState
+        return HStack {
+            Text("Connection Status")
+                .font(OnboardingStyle.font(14))
+                .foregroundStyle(.black.opacity(0.55))
+            Spacer()
+            Circle()
+                .fill(c.color)
+                .frame(width: 9, height: 9)
+            Text(c.label)
+                .font(OnboardingStyle.font(16, weight: .semibold))
+                .foregroundStyle(.black)
         }
+        .padding(.horizontal, 10)
+        .frame(width: OnboardingStyle.fieldWidth, height: 54)
+        .background(Color.white.opacity(0.5))
+        .clipShape(RoundedRectangle(cornerRadius: OnboardingStyle.cornerRadius))
+    }
+
+    private func statusRow(label: String, valueText: Text) -> some View {
+        HStack {
+            Text(label)
+                .font(OnboardingStyle.font(14))
+                .foregroundStyle(.black.opacity(0.55))
+            Spacer()
+            valueText
+                .foregroundStyle(.black)
+                .textSelection(.enabled)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 10)
+        .frame(width: OnboardingStyle.fieldWidth, height: 54)
+        .background(Color.white.opacity(0.5))
+        .clipShape(RoundedRectangle(cornerRadius: OnboardingStyle.cornerRadius))
+    }
+
+    private var actionButtons: some View {
+        VStack(spacing: 10) {
+            Button {
+                showPairSheet = true
+            } label: {
+                Label("Pair a different wristband", systemImage: "plus.circle")
+                    .font(OnboardingStyle.font(15, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+            }
+            .background(OnboardingStyle.figmaPrimaryBlue)
+            .clipShape(RoundedRectangle(cornerRadius: OnboardingStyle.cornerRadius))
+
+            Button(role: .destructive) {
+                showUnlinkConfirm = true
+            } label: {
+                Label(isUnlinking ? "Unlinking…" : "Unlink this wristband",
+                      systemImage: "xmark.circle")
+                    .font(OnboardingStyle.font(15, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+            }
+            .background(Color.red.opacity(0.75))
+            .clipShape(RoundedRectangle(cornerRadius: OnboardingStyle.cornerRadius))
+            .disabled(isUnlinking)
+        }
+        .frame(width: OnboardingStyle.fieldWidth)
+        .padding(.top, 6)
     }
 
     private var emptyCard: some View {
-        card(title: "Wristband") {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("No device linked").foregroundStyle(.secondary)
-                Button {
-                    showPairSheet = true
-                } label: {
-                    Label("Pair a wristband", systemImage: "plus.circle")
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                }
-                .buttonStyle(.borderedProminent)
+        VStack(alignment: .leading, spacing: 12) {
+            Text("No device linked")
+                .font(OnboardingStyle.font(14))
+                .foregroundStyle(.black.opacity(0.6))
+            Button {
+                showPairSheet = true
+            } label: {
+                Label("Pair a wristband", systemImage: "plus.circle")
+                    .font(OnboardingStyle.font(15, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
             }
+            .background(OnboardingStyle.figmaPrimaryBlue)
+            .clipShape(RoundedRectangle(cornerRadius: OnboardingStyle.cornerRadius))
         }
+        .padding(16)
+        .frame(width: OnboardingStyle.fieldWidth)
+        .background(Color.white.opacity(0.5))
+        .clipShape(RoundedRectangle(cornerRadius: OnboardingStyle.cornerRadius))
     }
 
     private func unlink() async {
@@ -143,17 +193,6 @@ struct DeviceTabView: View {
             errorMessage = error.localizedDescription
         }
     }
-
-    private func card<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-            content()
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
-        .background(.background, in: RoundedRectangle(cornerRadius: 16))
-        .shadow(color: .black.opacity(0.04), radius: 6, y: 3)
-    }
 }
 
 #Preview {
@@ -167,20 +206,4 @@ struct DeviceTabView: View {
         }
     }
     return PreviewWrapper()
-}
-
-private struct LabeledRow: View {
-    let label: String
-    let value: String
-    let mono: Bool
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(label).font(.caption).foregroundStyle(.secondary).frame(width: 60, alignment: .leading)
-            Text(value)
-                .font(mono ? .footnote.monospaced() : .footnote)
-                .textSelection(.enabled)
-            Spacer()
-        }
-    }
 }

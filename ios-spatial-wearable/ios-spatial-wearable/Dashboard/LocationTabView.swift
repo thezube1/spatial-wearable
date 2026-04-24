@@ -19,11 +19,13 @@ struct LocationTabView: View {
             .toolbar(.hidden, for: .navigationBar)
             .safeAreaInset(edge: .top, spacing: 0) {
                 Text("Location")
-                    .font(.largeTitle.bold())
+                    .font(OnboardingStyle.font(28, weight: .bold))
+                    .foregroundStyle(.white)
+                    .shadow(color: .black.opacity(0.25), radius: 4, x: 0, y: 1)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 20)
                     .padding(.vertical, 8)
-                    .background(.bar)
+                    .background(Color.black.opacity(0.12))
             }
         }
     }
@@ -97,31 +99,34 @@ struct LocationTabView: View {
 
     private func footerBadge(updatedAt: Date) -> some View {
         HStack(spacing: 8) {
-            Circle().fill(.green).frame(width: 8, height: 8)
+            Circle()
+                .fill(OnboardingStyle.figmaPrimaryBlue)
+                .frame(width: 8, height: 8)
             Text("Updated \(updatedAt, style: .relative) ago")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(OnboardingStyle.font(12, weight: .semibold))
+                .foregroundStyle(.black.opacity(0.8))
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(.regularMaterial, in: Capsule())
+        .background(Color.white.opacity(0.85), in: Capsule())
     }
 
     private var placeholder: some View {
         VStack(spacing: 16) {
             Image(systemName: "location.slash")
                 .font(.system(size: 56, weight: .light))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.white.opacity(0.75))
             Text(titleForState)
-                .font(.headline)
+                .font(OnboardingStyle.font(18, weight: .semibold))
+                .foregroundStyle(.white)
             Text(subtitleForState)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .font(OnboardingStyle.font(14))
+                .foregroundStyle(.white.opacity(0.8))
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(.systemGroupedBackground))
+        .background(Color.clear)
     }
 
     private var titleForState: String {

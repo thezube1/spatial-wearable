@@ -12,6 +12,7 @@ struct OnboardingView: View {
         case .selectEvent:    SelectEventView()
         case .createOrJoin:   CreateOrJoinGroupView()
         case .groupSetup:     GroupSetupView()
+        case .selectMeetingPoint: SelectMeetingPointView()
         case .confirmation:   ConfirmationView()
         }
     }

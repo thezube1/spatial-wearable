@@ -31,7 +31,9 @@ struct GroupTabView: View {
             VStack(spacing: 0) {
                 HStack {
                     Text("Group")
-                        .font(.largeTitle.bold())
+                        .font(OnboardingStyle.font(28, weight: .bold))
+                        .foregroundStyle(.white)
+                        .shadow(color: .black.opacity(0.25), radius: 4, x: 0, y: 1)
                     Spacer()
                     if group != nil, canManage {
                         Menu {
@@ -43,7 +45,9 @@ struct GroupTabView: View {
                                 }
                             }
                         } label: {
-                            Image(systemName: "ellipsis.circle").font(.title2)
+                            Image(systemName: "ellipsis.circle")
+                                .font(.title2)
+                                .foregroundStyle(.white)
                         }
                     }
                 }
@@ -52,7 +56,7 @@ struct GroupTabView: View {
 
                 Group {
                     if isLoading {
-                        ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                        ProgressView().tint(.white).frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else if let group {
                         groupDetail(group)
                     } else {
@@ -60,7 +64,7 @@ struct GroupTabView: View {
                     }
                 }
             }
-            .background(Color(.systemGroupedBackground))
+            .background(Color.clear)
             .toolbar(.hidden, for: .navigationBar)
         }
         .task { await load() }
@@ -164,32 +168,45 @@ struct GroupTabView: View {
                 VStack(spacing: 8) {
                     Image(systemName: "person.3.fill")
                         .font(.system(size: 44))
-                        .foregroundStyle(.blue)
+                        .foregroundStyle(.white)
                         .padding(.top, 32)
                     Text("You're not in a group yet")
-                        .font(.title3.weight(.semibold))
+                        .font(OnboardingStyle.font(18, weight: .semibold))
+                        .foregroundStyle(.white)
                     Text("Create a new group or join one with an invite code.")
-                        .foregroundStyle(.secondary)
+                        .font(OnboardingStyle.font(14))
+                        .foregroundStyle(.white.opacity(0.85))
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 32)
                 }
 
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Join with code").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    Text("Join with code")
+                        .font(OnboardingStyle.font(12, weight: .semibold))
+                        .foregroundStyle(.black.opacity(0.55))
                     HStack {
                         TextField("Enter invite code", text: $joinCode)
+                            .font(OnboardingStyle.font(16))
+                            .foregroundStyle(.black)
                             .textInputAutocapitalization(.characters)
                             .autocorrectionDisabled()
-                            .padding(12)
-                            .background(Color(.secondarySystemGroupedBackground),
-                                        in: RoundedRectangle(cornerRadius: 10))
+                            .padding(10)
+                            .background(Color.white.opacity(0.6),
+                                        in: RoundedRectangle(cornerRadius: OnboardingStyle.cornerRadius))
                         Button("Join") { Task { await join() } }
-                            .buttonStyle(.borderedProminent)
+                            .font(OnboardingStyle.font(15, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                            .background(OnboardingStyle.figmaPrimaryBlue)
+                            .clipShape(RoundedRectangle(cornerRadius: OnboardingStyle.cornerRadius))
                             .disabled(joinCode.isEmpty)
+                            .opacity(joinCode.isEmpty ? 0.5 : 1)
                     }
                 }
                 .padding(16)
-                .background(.background, in: RoundedRectangle(cornerRadius: 16))
+                .background(Color.white.opacity(0.5),
+                            in: RoundedRectangle(cornerRadius: OnboardingStyle.cornerRadius))
 
                 Button {
                     showCreateFlow = true
@@ -198,13 +215,18 @@ struct GroupTabView: View {
                         Image(systemName: "plus.circle.fill")
                         Text("Create a new group")
                     }
+                    .font(OnboardingStyle.font(16, weight: .semibold))
+                    .foregroundStyle(.white)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 14)
                 }
-                .buttonStyle(.borderedProminent)
+                .background(OnboardingStyle.figmaPrimaryBlue)
+                .clipShape(RoundedRectangle(cornerRadius: OnboardingStyle.cornerRadius))
 
                 if let errorMessage {
-                    Text(errorMessage).foregroundStyle(.red).font(.footnote)
+                    Text(errorMessage)
+                        .foregroundStyle(.red.opacity(0.95))
+                        .font(OnboardingStyle.font(12))
                 }
             }
             .padding(20)
@@ -233,29 +255,41 @@ struct GroupTabView: View {
     private func headerCard(_ g: GroupDetail) -> some View {
         VStack(spacing: 12) {
             ZStack {
-                Circle().fill(Color.blue.opacity(0.15)).frame(width: 80, height: 80)
-                Image(systemName: "person.3.fill").font(.system(size: 32)).foregroundStyle(.blue)
+                Circle()
+                    .fill(Color(white: 0.85))
+                    .frame(width: 80, height: 80)
+                Image(systemName: OnboardingStyle.avatarSymbol(forUserId: "group:\(g.id)"))
+                    .font(.system(size: 32))
+                    .foregroundStyle(.black.opacity(0.45))
             }
-            Text(g.name).font(.title2.weight(.bold))
+            Text(g.name)
+                .font(OnboardingStyle.font(20, weight: .bold))
+                .foregroundStyle(.black)
             if let ev = g.event {
                 Label(ev.name, systemImage: "calendar")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .font(OnboardingStyle.font(14))
+                    .foregroundStyle(.black.opacity(0.7))
             }
             Text("\(g.members.count) member\(g.members.count == 1 ? "" : "s")")
-                .font(.footnote).foregroundStyle(.secondary)
+                .font(OnboardingStyle.font(12))
+                .foregroundStyle(.black.opacity(0.6))
         }
         .frame(maxWidth: .infinity)
         .padding(20)
-        .background(.background, in: RoundedRectangle(cornerRadius: 16))
+        .background(Color.white.opacity(0.5),
+                    in: RoundedRectangle(cornerRadius: OnboardingStyle.cornerRadius))
     }
 
     private func inviteCard(_ g: GroupDetail) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Invite code").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Text("Invite code")
+                .font(OnboardingStyle.font(12, weight: .semibold))
+                .foregroundStyle(.black.opacity(0.55))
+                .textCase(.uppercase)
             HStack {
                 Text(g.join_code ?? "—")
-                    .font(.system(.title3, design: .monospaced).weight(.bold))
+                    .font(OnboardingStyle.font(20, weight: .bold).monospaced())
+                    .foregroundStyle(.black)
                     .textSelection(.enabled)
                 Spacer()
                 if let code = g.join_code {
@@ -263,45 +297,55 @@ struct GroupTabView: View {
                         UIPasteboard.general.string = code
                     } label: {
                         Image(systemName: "doc.on.doc")
+                            .foregroundStyle(OnboardingStyle.figmaPrimaryBlue)
                     }
                     ShareLink(item: "Join my group \"\(g.name)\" with code: \(code)") {
                         Image(systemName: "square.and.arrow.up")
+                            .foregroundStyle(OnboardingStyle.figmaPrimaryBlue)
                     }
                 }
             }
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background, in: RoundedRectangle(cornerRadius: 16))
+        .background(Color.white.opacity(0.5),
+                    in: RoundedRectangle(cornerRadius: OnboardingStyle.cornerRadius))
     }
 
     private func membersCard(_ g: GroupDetail) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Members").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text("Members")
+                    .font(OnboardingStyle.font(12, weight: .semibold))
+                    .foregroundStyle(.black.opacity(0.55))
+                    .textCase(.uppercase)
                 Spacer()
                 if canManage {
                     Button {
                         showAddMember = true
                     } label: {
                         Label("Add", systemImage: "plus")
-                            .font(.caption.weight(.semibold))
+                            .font(OnboardingStyle.font(12, weight: .semibold))
+                            .foregroundStyle(OnboardingStyle.figmaPrimaryBlue)
                     }
                 }
             }
             ForEach(g.members) { member in
                 memberRow(member, group: g)
-                if member.id != g.members.last?.id { Divider() }
+                if member.id != g.members.last?.id {
+                    Divider().background(Color.black.opacity(0.1))
+                }
             }
             if let trackingStatus {
                 Text(trackingStatus)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(OnboardingStyle.font(12))
+                    .foregroundStyle(.black.opacity(0.6))
                     .padding(.top, 4)
             }
         }
         .padding(16)
-        .background(.background, in: RoundedRectangle(cornerRadius: 16))
+        .background(Color.white.opacity(0.5),
+                    in: RoundedRectangle(cornerRadius: OnboardingStyle.cornerRadius))
     }
 
     private func memberRow(_ m: GroupMember, group g: GroupDetail) -> some View {
@@ -310,29 +354,46 @@ struct GroupTabView: View {
         let isSelf = me?.id == m.user_id
         let isTarget = effectiveTarget(in: g)?.user_id == m.user_id
         let canPickTarget = !isSelf && otherMembers(g).count >= 2
+        let avatarSymbol = OnboardingStyle.avatarSymbol(forUserId: m.user_id)
+        let dotColor = OnboardingStyle.memberStatusColor(forUserId: m.user_id)
         return HStack(spacing: 12) {
             ZStack {
-                Circle().fill(Color.blue.opacity(0.2)).frame(width: 40, height: 40)
-                Image(systemName: "person.fill").foregroundStyle(.blue)
+                Circle()
+                    .fill(Color(white: 0.85))
+                    .frame(width: 40, height: 40)
+                Image(systemName: avatarSymbol)
+                    .font(.system(size: 18))
+                    .foregroundStyle(.black.opacity(0.45))
                 if isLeader {
                     Image(systemName: "star.fill")
                         .font(.system(size: 10))
                         .foregroundStyle(.white)
                         .padding(4)
-                        .background(Circle().fill(Color.blue))
+                        .background(Circle().fill(OnboardingStyle.figmaPrimaryBlue))
                         .offset(x: 14, y: -14)
                 }
             }
             VStack(alignment: .leading, spacing: 2) {
-                Text(isSelf ? "You" : (m.display_name ?? m.username ?? "Unknown"))
-                    .font(.subheadline.weight(.semibold))
                 HStack(spacing: 6) {
-                    if let u = m.username { Text("@\(u)").font(.caption).foregroundStyle(.secondary) }
+                    Circle()
+                        .fill(dotColor)
+                        .frame(width: 8, height: 8)
+                    Text(isSelf ? "You" : (m.display_name ?? m.username ?? "Unknown"))
+                        .font(OnboardingStyle.font(15, weight: .semibold))
+                        .foregroundStyle(.black)
+                }
+                HStack(spacing: 6) {
+                    if let u = m.username {
+                        Text("@\(u)")
+                            .font(OnboardingStyle.font(12))
+                            .foregroundStyle(.black.opacity(0.6))
+                    }
                     if isLeader {
-                        Text("Leader").font(.caption2.weight(.bold))
+                        Text("Leader")
+                            .font(OnboardingStyle.font(10, weight: .bold))
                             .padding(.horizontal, 6).padding(.vertical, 2)
-                            .background(Color.blue.opacity(0.15), in: Capsule())
-                            .foregroundStyle(.blue)
+                            .background(OnboardingStyle.figmaPrimaryBlue.opacity(0.18), in: Capsule())
+                            .foregroundStyle(OnboardingStyle.figmaPrimaryBlue)
                     }
                 }
             }
@@ -341,21 +402,24 @@ struct GroupTabView: View {
                 if isTarget {
                     Label("Tracking", systemImage: "dot.radiowaves.left.and.right")
                         .labelStyle(.titleAndIcon)
-                        .font(.caption2.weight(.bold))
+                        .font(OnboardingStyle.font(10, weight: .bold))
                         .padding(.horizontal, 8).padding(.vertical, 4)
-                        .background(Color.green.opacity(0.18), in: Capsule())
-                        .foregroundStyle(.green)
+                        .background(Color.green.opacity(0.22), in: Capsule())
+                        .foregroundStyle(Color(red: 0.15, green: 0.55, blue: 0.25))
                 } else if canPickTarget {
                     Button("Track") { setTarget(m) }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
+                        .font(OnboardingStyle.font(12, weight: .semibold))
+                        .foregroundStyle(OnboardingStyle.figmaPrimaryBlue)
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                        .background(Color.white.opacity(0.6),
+                                    in: Capsule())
                 }
             }
             if canManage && !isSelf && !isCreatorOfGroup {
                 Button {
                     pendingRemove = m
                 } label: {
-                    Image(systemName: "minus.circle.fill").foregroundStyle(.red)
+                    Image(systemName: "minus.circle.fill").foregroundStyle(.red.opacity(0.85))
                 }
             }
         }
@@ -367,12 +431,19 @@ struct GroupTabView: View {
                 Button(role: .destructive) {
                     showLeaveConfirm = true
                 } label: {
-                    Text("Leave group").frame(maxWidth: .infinity).padding(.vertical, 10)
+                    Text("Leave group")
+                        .font(OnboardingStyle.font(15, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
                 }
-                .buttonStyle(.bordered)
+                .background(Color.red.opacity(0.75))
+                .clipShape(RoundedRectangle(cornerRadius: OnboardingStyle.cornerRadius))
             }
             if let errorMessage {
-                Text(errorMessage).foregroundStyle(.red).font(.footnote)
+                Text(errorMessage)
+                    .foregroundStyle(.red.opacity(0.95))
+                    .font(OnboardingStyle.font(12))
             }
         }
     }

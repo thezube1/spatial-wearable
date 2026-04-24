@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct DashboardView: View {
     @Environment(BLEManager.self) private var ble
@@ -9,19 +10,37 @@ struct DashboardView: View {
     @State private var device: Device?
     @State private var errorMessage: String?
 
+    init() {
+        // Translucent tab bar so the aesthetic background shows through.
+        let appearance = UITabBarAppearance()
+        appearance.configureWithTransparentBackground()
+        appearance.backgroundColor = UIColor.white.withAlphaComponent(0.45)
+        UITabBar.appearance().standardAppearance = appearance
+        UITabBar.appearance().scrollEdgeAppearance = appearance
+    }
+
     var body: some View {
-        TabView {
-            homeTab
-                .tabItem { Label("Home", systemImage: "house.fill") }
+        ZStack {
+            DashboardBackgroundView()
 
-            GroupTabView()
-                .tabItem { Label("Group", systemImage: "person.3.fill") }
+            TabView {
+                homeTab
+                    .tabItem { Label("Home", systemImage: "house.fill") }
 
-            LocationTabView()
-                .tabItem { Label("Map", systemImage: "map.fill") }
+                GroupTabView()
+                    .tabItem { Label("Group", systemImage: "person.3.fill") }
 
-            DeviceTabView(device: $device, errorMessage: $errorMessage)
-                .tabItem { Label("Device", systemImage: "applewatch") }
+                LocationTabView()
+                    .tabItem { Label("Map", systemImage: "map.fill") }
+
+                DeviceTabView(device: $device, errorMessage: $errorMessage)
+                    .tabItem { Label("Device", systemImage: "applewatch") }
+            }
+            .tint(OnboardingStyle.figmaPrimaryBlue)
+
+            WelcomeFullScreenFilmGrain()
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
         }
         .task {
             device = try? await APIClient.shared.getMyDevice()
@@ -62,12 +81,18 @@ struct DashboardView: View {
     }
 
     private var homeTab: some View {
-        NavigationStack {
+        ZStack {
+            Color.clear
+
             ScrollView {
                 VStack(spacing: 16) {
                     Text("Dashboard")
-                        .font(.largeTitle.bold())
+                        .font(OnboardingStyle.font(28, weight: .bold))
+                        .foregroundStyle(.white)
+                        .shadow(color: .black.opacity(0.25), radius: 4, x: 0, y: 1)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, 8)
+
                     eventCard
                     groupCard
 
@@ -79,16 +104,17 @@ struct DashboardView: View {
                         }
                     } label: {
                         Text("Sign Out")
+                            .font(OnboardingStyle.font(16, weight: .semibold))
+                            .foregroundStyle(.white)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 12)
                     }
-                    .buttonStyle(.bordered)
+                    .background(Color.red.opacity(0.75))
+                    .clipShape(RoundedRectangle(cornerRadius: OnboardingStyle.cornerRadius))
                     .padding(.top, 12)
                 }
                 .padding(20)
             }
-            .background(Color(.systemGroupedBackground))
-            .toolbar(.hidden, for: .navigationBar)
         }
     }
 
@@ -96,12 +122,24 @@ struct DashboardView: View {
         card(title: "Event") {
             if let e = coordinator.selectedEvent ?? coordinator.createdGroup?.event {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(e.name).font(.headline)
-                    if let v = e.venue { Text(v).foregroundStyle(.secondary).font(.subheadline) }
-                    if let c = e.category { Text(c).foregroundStyle(.secondary).font(.caption) }
+                    Text(e.name)
+                        .font(OnboardingStyle.font(16, weight: .semibold))
+                        .foregroundStyle(.black)
+                    if let v = e.venue {
+                        Text(v)
+                            .font(OnboardingStyle.font(14))
+                            .foregroundStyle(.black.opacity(0.7))
+                    }
+                    if let c = e.category {
+                        Text(c)
+                            .font(OnboardingStyle.font(12))
+                            .foregroundStyle(.black.opacity(0.6))
+                    }
                 }
             } else {
-                Text("No event selected").foregroundStyle(.secondary)
+                Text("No event selected")
+                    .font(OnboardingStyle.font(14))
+                    .foregroundStyle(.black.opacity(0.6))
             }
         }
     }
@@ -110,37 +148,51 @@ struct DashboardView: View {
         card(title: "Group") {
             if let g = coordinator.createdGroup {
                 HStack(spacing: 12) {
-                    ZStack {
-                        ForEach(Array(g.members.prefix(4).enumerated()), id: \.offset) { idx, _ in
-                            Circle()
-                                .fill(Color.blue.opacity(0.3))
-                                .frame(width: 30, height: 30)
-                                .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2))
-                                .offset(x: CGFloat(idx) * 16)
+                    HStack(spacing: -12) {
+                        ForEach(Array(g.members.prefix(4).enumerated()), id: \.offset) { _, m in
+                            ZStack {
+                                Circle()
+                                    .fill(Color(white: 0.85))
+                                    .frame(width: 34, height: 34)
+                                Image(systemName: OnboardingStyle.avatarSymbol(forUserId: m.user_id))
+                                    .font(.system(size: 14))
+                                    .foregroundStyle(.black.opacity(0.45))
+                                Circle()
+                                    .stroke(Color.white.opacity(0.8), lineWidth: 2)
+                                    .frame(width: 34, height: 34)
+                            }
                         }
                     }
-                    .frame(height: 30)
                     VStack(alignment: .leading) {
-                        Text(g.name).font(.headline)
-                        Text("\(g.members.count) members").foregroundStyle(.secondary).font(.caption)
+                        Text(g.name)
+                            .font(OnboardingStyle.font(16, weight: .semibold))
+                            .foregroundStyle(.black)
+                        Text("\(g.members.count) members")
+                            .font(OnboardingStyle.font(12))
+                            .foregroundStyle(.black.opacity(0.6))
                     }
                     Spacer()
                 }
             } else {
-                Text("No group").foregroundStyle(.secondary)
+                Text("No group")
+                    .font(OnboardingStyle.font(14))
+                    .foregroundStyle(.black.opacity(0.6))
             }
         }
     }
 
     private func card<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Text(title)
+                .font(OnboardingStyle.font(12, weight: .semibold))
+                .foregroundStyle(.black.opacity(0.55))
+                .textCase(.uppercase)
             content()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
-        .background(.background, in: RoundedRectangle(cornerRadius: 16))
-        .shadow(color: .black.opacity(0.04), radius: 6, y: 3)
+        .background(Color.white.opacity(0.5))
+        .clipShape(RoundedRectangle(cornerRadius: OnboardingStyle.cornerRadius))
     }
 }
 
