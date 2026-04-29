@@ -26,6 +26,10 @@ struct GroupTabView: View {
     @State private var showCreateFlow = false
     @State private var joinCode = ""
 
+    // Background polling so iOS picks up out-of-band group membership changes
+    // (e.g. another phone added/removed someone) without requiring app restart.
+    @State private var pollTask: Task<Void, Never>?
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
@@ -67,7 +71,28 @@ struct GroupTabView: View {
             .background(Color.clear)
             .toolbar(.hidden, for: .navigationBar)
         }
-        .task { await load() }
+        .task {
+            await load()
+            pollTask?.cancel()
+            pollTask = Task { @MainActor in
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(20))
+                    if Task.isCancelled { break }
+                    await load()
+                }
+            }
+        }
+        .onDisappear { pollTask?.cancel(); pollTask = nil }
+        // Whenever the wearable confirms a new target (watch long-press or
+        // mirrored phone write), resolve the MAC to a user_id and persist so
+        // subsequent auto-pushes don't override the wearer's choice.
+        .onChange(of: ble.currentTrackedMAC) { _, newMac in
+            guard let g = group else { return }
+            if let mac = newMac,
+               let m = g.members.first(where: { $0.linked_device_mac?.uppercased() == mac.uppercased() }) {
+                trackingTargetRaw = m.user_id
+            }
+        }
         .sheet(isPresented: $showRename) {
             if let g = group {
                 RenameGroupSheet(currentName: g.name) { newName in
@@ -79,7 +104,10 @@ struct GroupTabView: View {
             if let g = group {
                 AddMemberSheet(group: g) { updated in
                     group = updated
-                    Task { await pushTargetToWearable() }
+                    Task {
+                        await pushCandidateListToWearable()
+                        await pushTargetToWearable()
+                    }
                 }
             }
         }
@@ -123,6 +151,49 @@ struct GroupTabView: View {
     private func setTarget(_ member: GroupMember) {
         trackingTargetRaw = member.user_id
         Task { await pushTargetToWearable() }
+    }
+
+    // Candidate list = group members other than me who have a linked device.
+    // Capped at 8 (firmware MAX_CANDIDATES); ordered by joined_at so the same
+    // ordering is stable on the watch across pushes.
+    private func eligibleCandidates(_ g: GroupDetail) -> [(member: GroupMember, mac: String)] {
+        return g.members
+            .filter { $0.user_id != me?.id }
+            .compactMap { m in m.linked_device_mac.map { (m, $0) } }
+            .sorted { ($0.0.joined_at ?? "") < ($1.0.joined_at ?? "") }
+            .prefix(8)
+            .map { ($0.0, $0.1) }
+    }
+
+    /// Push the current eligible-candidates list to the wearable. Best-effort:
+    /// we silently swallow errors so the next poll/reconnect retries. Called
+    /// from load(), addMember/removeMember/join callbacks, and the 20s poll.
+    private func pushCandidateListToWearable() async {
+        guard let g = group, ble.connectionState == .connected else { return }
+        let entries = eligibleCandidates(g).map {
+            CandidateEntry(mac: $0.mac, name: $0.member.display_name ?? $0.member.username ?? "Friend")
+        }
+        do {
+            if entries.isEmpty {
+                try await ble.clearCandidateList()
+            } else {
+                try await ble.setCandidateList(entries)
+            }
+        } catch {
+            // Next reconnect/poll will retry.
+        }
+    }
+
+    /// Resolve `BLEManager.currentTrackedMAC` to a member's display name from
+    /// the current group, or fall back to a status string.
+    private var currentTrackingHeaderText: String {
+        guard ble.connectionState == .connected else { return "Wearable disconnected" }
+        guard let mac = ble.currentTrackedMAC else { return "Not tracking anyone" }
+        if let g = group,
+           let match = g.members.first(where: { $0.linked_device_mac?.uppercased() == mac.uppercased() }) {
+            return "Tracking \(match.display_name ?? match.username ?? "Friend")"
+        }
+        return "Tracking \(ble.trackingTargetName ?? "peer")"
     }
 
     private func pushTargetToWearable() async {
@@ -314,6 +385,17 @@ struct GroupTabView: View {
 
     private func membersCard(_ g: GroupDetail) -> some View {
         VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "dot.radiowaves.left.and.right")
+                    .foregroundStyle(ble.currentTrackedMAC == nil
+                                     ? Color.black.opacity(0.45)
+                                     : Color(red: 0.15, green: 0.55, blue: 0.25))
+                Text(currentTrackingHeaderText)
+                    .font(OnboardingStyle.font(13, weight: .medium))
+                    .foregroundStyle(.black.opacity(0.75))
+                Spacer()
+            }
+            .padding(.horizontal, 4)
             HStack {
                 Text("Members")
                     .font(OnboardingStyle.font(12, weight: .semibold))
@@ -352,7 +434,13 @@ struct GroupTabView: View {
         let isLeader = g.leader?.user_id == m.user_id
         let isCreatorOfGroup = g.created_by == m.user_id
         let isSelf = me?.id == m.user_id
-        let isTarget = effectiveTarget(in: g)?.user_id == m.user_id
+        // Source of truth for the badge is the wearable's …abd5 notify (mirrored
+        // for both phone-side and watch-side selections), not the local
+        // AppStorage hint.
+        let isTarget: Bool = {
+            guard let memberMac = m.linked_device_mac, let trackedMac = ble.currentTrackedMAC else { return false }
+            return memberMac.uppercased() == trackedMac.uppercased()
+        }()
         let canPickTarget = !isSelf && otherMembers(g).count >= 2
         let avatarSymbol = OnboardingStyle.avatarSymbol(forUserId: m.user_id)
         let dotColor = OnboardingStyle.memberStatusColor(forUserId: m.user_id)
@@ -459,6 +547,7 @@ struct GroupTabView: View {
             me = try await meTask
             group = try await groupTask
             if let g = group { coordinator.createdGroup = g }
+            await pushCandidateListToWearable()
             await pushTargetToWearable()
         } catch {
             errorMessage = error.localizedDescription
@@ -504,6 +593,7 @@ struct GroupTabView: View {
         do {
             try await APIClient.shared.removeMember(groupId: g.id, userId: m.user_id)
             group = try await APIClient.shared.getGroup(id: g.id)
+            await pushCandidateListToWearable()
             await pushTargetToWearable()
         } catch {
             errorMessage = error.localizedDescription
@@ -516,6 +606,8 @@ struct GroupTabView: View {
             group = g
             coordinator.createdGroup = g
             joinCode = ""
+            await pushCandidateListToWearable()
+            await pushTargetToWearable()
         } catch {
             errorMessage = error.localizedDescription
         }

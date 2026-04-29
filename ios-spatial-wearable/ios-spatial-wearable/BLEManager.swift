@@ -10,6 +10,8 @@ let ownerAuthCharacteristicUUID  = CBUUID(string: "12345678-1234-5678-1234-56781
 let locationCharacteristicUUID   = CBUUID(string: "12345678-1234-5678-1234-56781234abd1")
 let targetCharacteristicUUID     = CBUUID(string: "12345678-1234-5678-1234-56781234abd2")
 let peerLocationCharacteristicUUID = CBUUID(string: "12345678-1234-5678-1234-56781234abd3")
+let candidatesCharacteristicUUID = CBUUID(string: "12345678-1234-5678-1234-56781234abd4")
+let selectedTargetCharacteristicUUID = CBUUID(string: "12345678-1234-5678-1234-56781234abd5")
 
 struct WearableLocation: Equatable {
     let latitude: Double
@@ -31,6 +33,13 @@ struct DiscoveredDevice: Identifiable {
     var rssi: Int
 }
 
+/// One entry in the wearable's candidate list (a group member who has a
+/// linked device the wearer can choose to track).
+struct CandidateEntry: Equatable {
+    let mac: String   // "AA:BB:CC:DD:EE:FF"
+    let name: String  // display name, will be truncated to 24 UTF-8 bytes
+}
+
 @Observable
 final class BLEManager: NSObject, @unchecked Sendable {
     var isBluetoothOn = false
@@ -48,6 +57,14 @@ final class BLEManager: NSObject, @unchecked Sendable {
     /// Display name of the currently-selected tracking target. Set when iOS
     /// writes the target characteristic; used to label the peer's map pin.
     var trackingTargetName: String?
+    /// MAC of the wearable's currently-tracked target, mirrored from the
+    /// firmware via the …abd5 notify channel. Source of truth for the iOS
+    /// Group screen "Tracking <name>" badge — updates whether the wearer
+    /// confirmed via long-press or the phone wrote …abd2.
+    var currentTrackedMAC: String?
+    /// Last candidate list pushed to the wearable. Re-sent on reconnect so
+    /// the firmware doesn't lose the list across BLE drops.
+    var lastSentCandidates: [CandidateEntry] = []
 
     enum ConnectionState: Equatable {
         case disconnected, scanning, connecting, connected
@@ -82,6 +99,8 @@ final class BLEManager: NSObject, @unchecked Sendable {
     private var locationCharacteristic: CBCharacteristic?
     private var targetCharacteristic: CBCharacteristic?
     private var peerLocationCharacteristic: CBCharacteristic?
+    private var candidatesCharacteristic: CBCharacteristic?
+    private var selectedTargetCharacteristic: CBCharacteristic?
     private var rssiTimer: Timer?
 
     // Async support.
@@ -136,9 +155,12 @@ final class BLEManager: NSObject, @unchecked Sendable {
         locationCharacteristic = nil
         targetCharacteristic = nil
         peerLocationCharacteristic = nil
+        candidatesCharacteristic = nil
+        selectedTargetCharacteristic = nil
         wearableLocation = nil
         peerLocation = nil
         trackingTargetName = nil
+        currentTrackedMAC = nil
         connectionState = .disconnected
         rssi = 0
     }
@@ -192,6 +214,7 @@ final class BLEManager: NSObject, @unchecked Sendable {
         if uuid == ownerAuthCharacteristicUUID { return ownerAuthCharacteristic }
         if uuid == macReadCharacteristicUUID   { return macCharacteristic }
         if uuid == targetCharacteristicUUID    { return targetCharacteristic }
+        if uuid == candidatesCharacteristicUUID { return candidatesCharacteristic }
         return nil
     }
 
@@ -212,9 +235,15 @@ final class BLEManager: NSObject, @unchecked Sendable {
     }
 
     /// Prove ownership on a reconnect by writing the same user_id the wearable
-    /// has stored. Firmware disconnects us if the value doesn't match.
+    /// has stored. Firmware disconnects us if the value doesn't match. After a
+    /// successful auth, re-push the cached candidate list so the firmware's
+    /// in-RAM copy stays in sync across reconnects.
     func authenticate(userId: String) async throws {
         try await writeString(userId, toCharacteristic: ownerAuthCharacteristicUUID)
+        let cached = await MainActor.run { self.lastSentCandidates }
+        if !cached.isEmpty {
+            try? await sendCandidateList(cached)
+        }
     }
 
     private func writeString(_ value: String, toCharacteristic uuid: CBUUID) async throws {
@@ -265,6 +294,54 @@ final class BLEManager: NSObject, @unchecked Sendable {
         await MainActor.run {
             self.trackingTargetName = nil
             self.peerLocation = nil
+        }
+    }
+
+    /// Push the group's eligible-tracking-candidates list to the wearable.
+    /// Wire format on …abd4: `[u8 count]` then for each candidate
+    /// `[6-byte MAC][u8 nameLen][nameLen UTF-8]`. Capped at 8 entries.
+    func setCandidateList(_ entries: [CandidateEntry]) async throws {
+        try await sendCandidateList(entries)
+    }
+
+    /// Clear the wearable's candidate list (count=0). The firmware then
+    /// auto-clears any active target that was on the list.
+    func clearCandidateList() async throws {
+        try await writeData(Data([0x00]), toCharacteristic: candidatesCharacteristicUUID)
+        await MainActor.run { self.lastSentCandidates = [] }
+    }
+
+    private func sendCandidateList(_ entries: [CandidateEntry]) async throws {
+        let capped = Array(entries.prefix(8))
+        var payload = Data()
+        payload.append(UInt8(capped.count))
+        for entry in capped {
+            guard let macBytes = Self.parseMAC(entry.mac) else { continue }
+            let nameBytes = Array(entry.name.utf8.prefix(24))
+            payload.append(contentsOf: macBytes)
+            payload.append(UInt8(nameBytes.count))
+            payload.append(contentsOf: nameBytes)
+        }
+        try await writeData(payload, toCharacteristic: candidatesCharacteristicUUID)
+        await MainActor.run { self.lastSentCandidates = capped }
+    }
+
+    /// Parse the 6-byte payload from the …abd5 selected-target notify channel.
+    /// All-0xFF means "no target". Updates `currentTrackedMAC` (the source of
+    /// truth for the iOS Group screen badge).
+    private func handleSelectedTargetPayload(_ data: Data) {
+        guard data.count == 6 else { return }
+        let bytes = Array(data)
+        if bytes == [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF] {
+            currentTrackedMAC = nil
+            trackingTargetName = nil
+            peerLocation = nil
+            return
+        }
+        let mac = bytes.map { String(format: "%02X", $0) }.joined(separator: ":")
+        currentTrackedMAC = mac
+        if let match = lastSentCandidates.first(where: { $0.mac.uppercased() == mac.uppercased() }) {
+            trackingTargetName = match.name
         }
     }
 
@@ -442,8 +519,11 @@ extension BLEManager: CBCentralManagerDelegate {
             self.locationCharacteristic = nil
             self.targetCharacteristic = nil
             self.peerLocationCharacteristic = nil
+            self.candidatesCharacteristic = nil
+            self.selectedTargetCharacteristic = nil
             self.wearableLocation = nil
             self.peerLocation = nil
+            self.currentTrackedMAC = nil
             self.connectionState = .disconnected
             self.rssi = 0
             self.rssiTimer?.invalidate()
@@ -474,6 +554,8 @@ extension BLEManager: CBPeripheralDelegate {
                     locationCharacteristicUUID,
                     targetCharacteristicUUID,
                     peerLocationCharacteristicUUID,
+                    candidatesCharacteristicUUID,
+                    selectedTargetCharacteristicUUID,
                 ], for: service
             )
         }
@@ -518,6 +600,16 @@ extension BLEManager: CBPeripheralDelegate {
                 }
             } else if characteristic.uuid == peerLocationCharacteristicUUID {
                 DispatchQueue.main.async { self.peerLocationCharacteristic = characteristic }
+                if characteristic.properties.contains(.notify) {
+                    peripheral.setNotifyValue(true, for: characteristic)
+                }
+                if characteristic.properties.contains(.read) {
+                    peripheral.readValue(for: characteristic)
+                }
+            } else if characteristic.uuid == candidatesCharacteristicUUID {
+                DispatchQueue.main.async { self.candidatesCharacteristic = characteristic }
+            } else if characteristic.uuid == selectedTargetCharacteristicUUID {
+                DispatchQueue.main.async { self.selectedTargetCharacteristic = characteristic }
                 if characteristic.properties.contains(.notify) {
                     peripheral.setNotifyValue(true, for: characteristic)
                 }
@@ -575,6 +667,10 @@ extension BLEManager: CBPeripheralDelegate {
             }
             if characteristic.uuid == peerLocationCharacteristicUUID {
                 self.handlePeerLocationPayload(data)
+                return
+            }
+            if characteristic.uuid == selectedTargetCharacteristicUUID {
+                self.handleSelectedTargetPayload(data)
                 return
             }
             self.lastReceivedData = data

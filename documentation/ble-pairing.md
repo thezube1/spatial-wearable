@@ -15,6 +15,8 @@ Firmware: `arduino/10_wearable_persistent_pairing/10_wearable_persistent_pairing
 | Location | `12345678-1234-5678-1234-56781234abd1` | READ, NOTIFY | 9-byte GPS payload pushed by the wearable every 15 s. Layout: `valid(u8) | lat(float32 LE) | lon(float32 LE)`. `valid=0` means no fix yet — lat/lon should be ignored. Added in firmware `12_wearable_location_ble`. |
 | Target-select | `12345678-1234-5678-1234-56781234abd2` | WRITE | Only accepted on an authed connection. iOS writes the group member the wearable should lock onto. Added in firmware `13_wearable_target_select`. |
 | Peer-location | `12345678-1234-5678-1234-56781234abd3` | READ, NOTIFY | 9-byte payload carrying the *target* peer's GPS forwarded from ESP-NOW. Same layout as Location (`valid(u8) | lat(f32 LE) | lon(f32 LE)`). Notified every ~3 s, and immediately when the target changes or clears (valid=0). Added in firmware `14_wearable_peer_location`. |
+| Candidate list | `12345678-1234-5678-1234-56781234abd4` | WRITE | Owner-auth gated. iOS pushes up to 8 group members the wearer can cycle through and confirm on the watch. Wire format: `[u8 count]` then per entry `[6-byte MAC][u8 nameLen][nameLen UTF-8]`. `count=0` clears. Added in firmware `16_wearable_group_targets`. |
+| Selected target | `12345678-1234-5678-1234-56781234abd5` | READ, NOTIFY | 6-byte MAC of the wearable's currently-tracked target; all-`0xFF` means "no target". Source of truth for the iOS Group screen badge. Notified on watch long-press confirm, on phone `abd2` writes (mirrored), and on stale-target prune. Added in firmware `16_wearable_group_targets`. |
 
 ## Persistent State (NVS)
 
@@ -121,3 +123,57 @@ The peer-location characteristic (`abd3`) streams the *currently-tracked target'
 **Naming:** the wearable does not include the target's display name in this payload. iOS already knows the target's name (it wrote it via `abd2`) and labels the peer's map pin with `BLEManager.trackingTargetName`. When the target is cleared or the connection drops, `trackingTargetName` and `peerLocation` are both reset.
 
 **iOS subscription:** `BLEManager` discovers `abd3` alongside the other service characteristics and calls `setNotifyValue(true)` during characteristic discovery. Parsed payloads populate `BLEManager.peerLocation: PeerLocation?`, which the `LocationTabView` map renders as a second (orange) annotation.
+
+## Candidate List (firmware 16)
+
+The candidate-list characteristic (`abd4`) lets iOS push the set of group members the wearer can choose to track from the watch itself. Selection happens on the wearable; the phone reflects the choice via the selected-target notify channel (`abd5`).
+
+**Wire format:**
+
+```
+[u8 count]                          1 byte
+repeated count times:
+  [6-byte MAC]                      6 bytes
+  [u8 nameLen, 1..24]               1 byte
+  [nameLen bytes UTF-8 name]        ≤ 24 bytes
+```
+
+- Maximum size at `count=8`: `1 + 8 × (6 + 1 + 24) = 249` bytes — fits in the negotiated ATT MTU iOS settles on (≥ 185 bytes; ESP32 NimBLE supports up to 517).
+- `count=0` (single `0x00` byte) clears the list. The firmware then auto-clears any active target that was on the list.
+
+**Auth:** writes are rejected unless the central has authed on the current connection (owner-auth on `abd0` succeeded).
+
+**Persistence:** the in-RAM list is mirrored to NVS under key `cands` in the `sw-pair` namespace, so it survives a reboot. On boot the firmware also validates the persisted active target (`tmac`/`tname`) against the persisted candidate list — if the target is no longer present (e.g. that user left the group between sessions), the target is cleared.
+
+**Stale-target prune:** every successful `abd4` write triggers an "is the active target still in this list?" check. If not, the firmware:
+1. Clears the active target (RAM + NVS), drops cached peer state, and forces a redraw.
+2. Notifies on `abd5` with `FF×6` so iOS clears its badge immediately.
+
+**iOS behavior:**
+
+- On Group tab appear, on every group `add/remove/join`, and on a 20-second poll loop, iOS computes the candidate list (`g.members` filtered to non-self with `linked_device_mac`, sorted by `joined_at`, capped at 8) and writes it.
+- After successful owner-auth on a reconnect, iOS automatically re-pushes the cached `lastSentCandidates` so the firmware's RAM copy stays in sync across BLE drops.
+
+## Selected Target (firmware 16)
+
+The selected-target characteristic (`abd5`) is the *source of truth* the iOS Group screen reads to display "Tracking <name>". It fires notifications on three events:
+
+1. **Watch long-press confirm.** While in the NAV target-select sub-mode (see below), the wearer holds the button for 3 seconds; the firmware applies the highlighted candidate as the active target and notifies the new MAC.
+2. **Phone `abd2` write.** The existing per-row "Track" button on iOS still works. After the firmware persists the selection, it mirrors the new MAC out via `abd5` so the phone (and any other subscribed central) see the change through the same channel.
+3. **Stale-target prune.** When a candidate-list write removes the active target, the firmware clears it and notifies `FF×6`.
+
+**Payload:** exactly 6 bytes — the raw target MAC, or `FF FF FF FF FF FF` to mean "no target selected".
+
+**iOS subscription:** `BLEManager` discovers `abd5` and calls `setNotifyValue(true)` during characteristic discovery. Parsed payloads populate `BLEManager.currentTrackedMAC: String?`. The Group tab's "Tracking" header strip and the per-row badge both read this value.
+
+## Target Select Sub-Mode (firmware 16, NAV screen)
+
+A short tap on the NAV screen enters target-select sub-mode when the candidate list is non-empty. While in this sub-mode:
+
+- **Quick tap (release ≤ 650 ms)** — cycle to the next candidate. The display shows the candidate's display name (large, cyan), `(X of N)` index, and "Tap to cycle / Hold 3s to confirm" hints.
+- **Hold 3 s** — confirm the highlighted candidate. The firmware persists the new target, fires `abd5` notify, and shows a brief "Tracking <name>" flash before returning to normal NAV. A cyan progress arc fills around the screen perimeter while held to indicate progress.
+- **8 seconds of inactivity** — exit sub-mode without changes. Active target is unchanged.
+- **5 s sleep hold is gated off** while selecting — release first, then re-hold 5 s to enter Power OFF.
+- **Triple-tap SOS is gated off** while selecting — three rapid taps cycle candidates rather than triggering SOS.
+
+The first tap on entry pre-seeds the index to the currently-tracked target if it's in the list (so cycling starts from the wearer's current selection).
