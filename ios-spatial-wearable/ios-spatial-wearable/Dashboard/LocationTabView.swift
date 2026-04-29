@@ -6,16 +6,28 @@ struct LocationTabView: View {
 
     @State private var cameraPosition: MapCameraPosition = .automatic
     @State private var hasCenteredOnce = false
+    @State private var syncErrorMessage: String?
 
     var body: some View {
         NavigationStack {
-            Group {
-                if let location = ble.wearableLocation {
-                    mapView(for: location)
-                } else {
-                    placeholder
+            ZStack {
+                Group {
+                    if let location = ble.wearableLocation {
+                        mapView(for: location)
+                    } else {
+                        placeholder
+                    }
+                }
+
+                // GPS-sync overlay sits above both map and placeholder so the
+                // user gets the same UI regardless of whether a stale pin is
+                // still on screen.
+                if shouldShowSyncOverlay {
+                    syncOverlay
+                        .transition(.opacity.combined(with: .scale(scale: 0.96)))
                 }
             }
+            .animation(.easeInOut(duration: 0.2), value: ble.gpsSyncState)
             .toolbar(.hidden, for: .navigationBar)
             .safeAreaInset(edge: .top, spacing: 0) {
                 Text("Location")
@@ -124,6 +136,11 @@ struct LocationTabView: View {
                 .foregroundStyle(.white.opacity(0.8))
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
+
+            if shouldShowSyncCTA {
+                syncButton
+                    .padding(.top, 12)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.clear)
@@ -140,11 +157,167 @@ struct LocationTabView: View {
     private var subtitleForState: String {
         switch ble.connectionState {
         case .connected:
-            "Your wearable is looking for satellites. This can take up to a minute outdoors."
+            "Your wearable is connected but doesn't have a GPS lock yet. Tap Sync GPS to briefly turn radios off and force a fresh fix."
         case .connecting, .scanning:
             "Hold on while we reconnect over Bluetooth."
         default:
             "Once your wearable reconnects, its location will appear here."
+        }
+    }
+
+    // MARK: - GPS sync UI
+
+    /// Show the CTA when we're connected and don't have a fresh fix.
+    /// "Fresh" is anything within the last 90 s — older than that and the
+    /// fix is stale enough that re-syncing is reasonable to offer.
+    private var shouldShowSyncCTA: Bool {
+        if ble.connectionState != .connected { return false }
+        if case .running = ble.gpsSyncState { return false }
+        if let loc = ble.wearableLocation, Date().timeIntervalSince(loc.receivedAt) < 90 {
+            return false
+        }
+        return true
+    }
+
+    /// Show the modal-style overlay any time a sync is in flight or we're
+    /// briefly displaying the success/failure result.
+    private var shouldShowSyncOverlay: Bool {
+        switch ble.gpsSyncState {
+        case .running, .success, .failed: true
+        case .idle: false
+        }
+    }
+
+    private var syncButton: some View {
+        Button {
+            triggerSync()
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "location.viewfinder")
+                    .font(.system(size: 16, weight: .semibold))
+                Text("Sync GPS")
+                    .font(OnboardingStyle.font(16, weight: .semibold))
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 22)
+            .padding(.vertical, 12)
+            .background(
+                LinearGradient(
+                    colors: [
+                        OnboardingStyle.figmaPrimaryBlue,
+                        OnboardingStyle.figmaPrimaryBlue.opacity(0.78)
+                    ],
+                    startPoint: .top, endPoint: .bottom
+                )
+            )
+            .clipShape(Capsule())
+            .shadow(color: .black.opacity(0.25), radius: 6, x: 0, y: 3)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func triggerSync() {
+        syncErrorMessage = nil
+        Task {
+            do {
+                try await ble.requestGpsSync()
+            } catch {
+                await MainActor.run {
+                    syncErrorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var syncOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.55).ignoresSafeArea()
+            VStack(spacing: 16) {
+                switch ble.gpsSyncState {
+                case .running(let secondsRemaining):
+                    ZStack {
+                        Circle()
+                            .stroke(Color.white.opacity(0.18), lineWidth: 8)
+                            .frame(width: 132, height: 132)
+                        Circle()
+                            .trim(from: 0, to: max(0.001, CGFloat(secondsRemaining) / 30.0))
+                            .stroke(
+                                OnboardingStyle.figmaPrimaryBlue,
+                                style: StrokeStyle(lineWidth: 8, lineCap: .round)
+                            )
+                            .rotationEffect(.degrees(-90))
+                            .frame(width: 132, height: 132)
+                            .animation(.linear(duration: 0.9), value: secondsRemaining)
+                        VStack(spacing: 2) {
+                            Text("\(secondsRemaining)")
+                                .font(OnboardingStyle.font(36, weight: .bold))
+                                .foregroundStyle(.white)
+                                .monospacedDigit()
+                            Text("seconds")
+                                .font(OnboardingStyle.font(11))
+                                .foregroundStyle(.white.opacity(0.7))
+                        }
+                    }
+                    Text(secondsRemaining > 0 ? "Syncing GPS…" : "Finishing up…")
+                        .font(OnboardingStyle.font(18, weight: .semibold))
+                        .foregroundStyle(.white)
+                    Text(secondsRemaining > 0
+                         ? "Radios are off so the wearable can lock onto satellites. Hold the watch up with a clear sky view."
+                         : "Reconnecting to the wearable to confirm the fix.")
+                        .font(OnboardingStyle.font(13))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 32)
+
+                case .success:
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 56))
+                        .foregroundStyle(.green)
+                    Text("GPS Synced")
+                        .font(OnboardingStyle.font(20, weight: .bold))
+                        .foregroundStyle(.white)
+                    Text("Your wearable's location is up to date.")
+                        .font(OnboardingStyle.font(13))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 32)
+
+                case .failed:
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 52))
+                        .foregroundStyle(.orange)
+                    Text("Sync Failed")
+                        .font(OnboardingStyle.font(20, weight: .bold))
+                        .foregroundStyle(.white)
+                    Text("The wearable couldn't get a GPS lock. Please try again, ideally outdoors with a clear view of the sky.")
+                        .font(OnboardingStyle.font(13))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 32)
+                    Button {
+                        triggerSync()
+                    } label: {
+                        Text("Try Again")
+                            .font(OnboardingStyle.font(15, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 22)
+                            .padding(.vertical, 10)
+                            .background(OnboardingStyle.figmaPrimaryBlue, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 4)
+
+                case .idle:
+                    EmptyView()
+                }
+            }
+            .padding(28)
+            .background(
+                RoundedRectangle(cornerRadius: 20)
+                    .fill(Color(white: 0.12).opacity(0.92))
+            )
+            .padding(.horizontal, 28)
         }
     }
 }

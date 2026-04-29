@@ -12,6 +12,7 @@ let targetCharacteristicUUID     = CBUUID(string: "12345678-1234-5678-1234-56781
 let peerLocationCharacteristicUUID = CBUUID(string: "12345678-1234-5678-1234-56781234abd3")
 let candidatesCharacteristicUUID = CBUUID(string: "12345678-1234-5678-1234-56781234abd4")
 let selectedTargetCharacteristicUUID = CBUUID(string: "12345678-1234-5678-1234-56781234abd5")
+let gpsSyncCharacteristicUUID = CBUUID(string: "12345678-1234-5678-1234-56781234abd6")
 
 struct WearableLocation: Equatable {
     let latitude: Double
@@ -40,6 +41,23 @@ struct CandidateEntry: Equatable {
     let name: String  // display name, will be truncated to 24 UTF-8 bytes
 }
 
+/// State of a user-initiated GPS sync (firmware 18, abd6 characteristic).
+/// Drives the "Sync GPS" UI on the Map tab.
+enum GpsSyncState: Equatable {
+    /// No sync in progress.
+    case idle
+    /// Running on the wearable; radios off; `secondsRemaining` is a local
+    /// estimate used to drive the countdown UI even while the BLE link is
+    /// down. It can be 0 with state still .running for the brief window
+    /// between the wearable's poll completing and iOS reconnecting.
+    case running(secondsRemaining: Int)
+    /// Wearable acquired a fresh fix during the sync window.
+    case success
+    /// Wearable's 30 s window elapsed without acquiring a fix, OR the iOS
+    /// side hit its outer timeout waiting for the wearable to come back.
+    case failed
+}
+
 @Observable
 final class BLEManager: NSObject, @unchecked Sendable {
     var isBluetoothOn = false
@@ -65,6 +83,9 @@ final class BLEManager: NSObject, @unchecked Sendable {
     /// Last candidate list pushed to the wearable. Re-sent on reconnect so
     /// the firmware doesn't lose the list across BLE drops.
     var lastSentCandidates: [CandidateEntry] = []
+    /// State of an in-flight GPS sync (firmware 18). The Map tab observes
+    /// this to render the countdown / success / failure overlay.
+    var gpsSyncState: GpsSyncState = .idle
 
     enum ConnectionState: Equatable {
         case disconnected, scanning, connecting, connected
@@ -101,7 +122,11 @@ final class BLEManager: NSObject, @unchecked Sendable {
     private var peerLocationCharacteristic: CBCharacteristic?
     private var candidatesCharacteristic: CBCharacteristic?
     private var selectedTargetCharacteristic: CBCharacteristic?
+    private var gpsSyncCharacteristic: CBCharacteristic?
     private var rssiTimer: Timer?
+    private var gpsSyncCountdownTimer: Timer?
+    private var gpsSyncTimeoutTask: Task<Void, Never>?
+    private var gpsSyncResolveTask: Task<Void, Never>?
 
     // Async support.
     private var pendingMACContinuation: CheckedContinuation<String, Error>?
@@ -146,6 +171,11 @@ final class BLEManager: NSObject, @unchecked Sendable {
     func disconnect() {
         rssiTimer?.invalidate()
         rssiTimer = nil
+        // User-initiated disconnect — also abandon any in-flight GPS sync.
+        gpsSyncCountdownTimer?.invalidate()
+        gpsSyncTimeoutTask?.cancel()
+        gpsSyncResolveTask?.cancel()
+        gpsSyncState = .idle
         if let peripheral = connectedPeripheral {
             centralManager.cancelPeripheralConnection(peripheral)
         }
@@ -157,6 +187,7 @@ final class BLEManager: NSObject, @unchecked Sendable {
         peerLocationCharacteristic = nil
         candidatesCharacteristic = nil
         selectedTargetCharacteristic = nil
+        gpsSyncCharacteristic = nil
         wearableLocation = nil
         peerLocation = nil
         trackingTargetName = nil
@@ -215,6 +246,7 @@ final class BLEManager: NSObject, @unchecked Sendable {
         if uuid == macReadCharacteristicUUID   { return macCharacteristic }
         if uuid == targetCharacteristicUUID    { return targetCharacteristic }
         if uuid == candidatesCharacteristicUUID { return candidatesCharacteristic }
+        if uuid == gpsSyncCharacteristicUUID   { return gpsSyncCharacteristic }
         return nil
     }
 
@@ -309,6 +341,111 @@ final class BLEManager: NSObject, @unchecked Sendable {
     func clearCandidateList() async throws {
         try await writeData(Data([0x00]), toCharacteristic: candidatesCharacteristicUUID)
         await MainActor.run { self.lastSentCandidates = [] }
+    }
+
+    /// Ask the wearable to enter GPS-sync mode (firmware 18). Writes `0x01`
+    /// to abd6, then immediately flips local state to `.running` and starts
+    /// a 30 s countdown. The BLE link will drop almost instantly (the
+    /// wearable kills its radios) and the dashboard's reconnect loop will
+    /// bring it back up; the wearable then notifies us with success/failed
+    /// over abd6 once we've re-authed. The outer 60 s timeout protects
+    /// against the wearable never coming back at all.
+    func requestGpsSync() async throws {
+        // Flip the UI to "running" before issuing the write so the user
+        // sees instant feedback even if the BLE write blocks for a beat.
+        DispatchQueue.main.async { self.startLocalGpsSyncCountdown() }
+        do {
+            try await writeData(Data([0x01]), toCharacteristic: gpsSyncCharacteristicUUID)
+        } catch {
+            // The wearable may disconnect between accepting the write and
+            // sending the BLE response. CoreBluetooth surfaces that as a
+            // write error; we swallow it because the trigger has already
+            // landed (we'll see the abd6 notify on reconnect).
+            // If the write actually failed *before* delivery, our 60 s
+            // outer timeout will mark this as failed.
+        }
+    }
+
+    /// MUST be called on the main thread. Resets timers, sets the .running
+    /// state, kicks off the per-second countdown, and arms the 60 s outer
+    /// timeout that resolves to .failed if the wearable never reports back.
+    private func startLocalGpsSyncCountdown() {
+        gpsSyncCountdownTimer?.invalidate()
+        gpsSyncTimeoutTask?.cancel()
+        gpsSyncResolveTask?.cancel()
+        gpsSyncResolveTask = nil
+        let total = 30
+        gpsSyncState = .running(secondsRemaining: total)
+
+        let started = Date()
+        gpsSyncCountdownTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            let elapsed = Int(Date().timeIntervalSince(started))
+            let remaining = max(0, total - elapsed)
+            // Stop animating once we reach 0; .running stays until the
+            // wearable's abd6 notify (or our outer timeout) resolves it.
+            // The view swaps to "Finishing up…" copy when remaining == 0.
+            switch self.gpsSyncState {
+            case .running:
+                self.gpsSyncState = .running(secondsRemaining: remaining)
+            default:
+                timer.invalidate()
+            }
+            if remaining == 0 {
+                timer.invalidate()
+            }
+        }
+
+        // Outer timeout: 60 s from request. Covers every failure mode
+        // (wearable never reconnects, abd6 notify dropped, etc.) by falling
+        // through to .failed so the user can retry.
+        gpsSyncTimeoutTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(60))
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if case .running = self.gpsSyncState {
+                    self.gpsSyncCountdownTimer?.invalidate()
+                    self.gpsSyncState = .failed
+                    self.scheduleGpsSyncIdleReset(after: 5)
+                }
+            }
+        }
+    }
+
+    /// MUST be called on the main thread.
+    private func resolveGpsSync(_ state: GpsSyncState) {
+        gpsSyncCountdownTimer?.invalidate()
+        gpsSyncTimeoutTask?.cancel()
+        gpsSyncState = state
+        scheduleGpsSyncIdleReset(after: state == .success ? 3 : 5)
+    }
+
+    /// MUST be called on the main thread.
+    private func scheduleGpsSyncIdleReset(after seconds: Int) {
+        gpsSyncResolveTask?.cancel()
+        gpsSyncResolveTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(seconds))
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.gpsSyncState = .idle
+            }
+        }
+    }
+
+    /// Parse the 2-byte abd6 payload `[status, secondsRemaining]`. Status:
+    /// 0=idle, 1=running, 2=success, 3=failed. We only act on the terminal
+    /// states (2/3); a stray "running" notify after the wearable is back
+    /// online is benign because the local countdown owns the running UI.
+    /// MUST be called on the main thread (delegate marshals via
+    /// DispatchQueue.main.async before invoking).
+    private func handleGpsSyncPayload(_ data: Data) {
+        guard data.count >= 1 else { return }
+        let status = data[0]
+        switch status {
+        case 0x02: resolveGpsSync(.success)
+        case 0x03: resolveGpsSync(.failed)
+        default:   break
+        }
     }
 
     private func sendCandidateList(_ entries: [CandidateEntry]) async throws {
@@ -521,6 +658,12 @@ extension BLEManager: CBCentralManagerDelegate {
             self.peerLocationCharacteristic = nil
             self.candidatesCharacteristic = nil
             self.selectedTargetCharacteristic = nil
+            // Note: gpsSyncCharacteristic is cleared but gpsSyncState is
+            // intentionally preserved — a sync-in-progress disconnect is
+            // expected (the wearable kills its radios) and the dashboard's
+            // reconnect loop will bring the link back up so the abd6 notify
+            // can resolve the state.
+            self.gpsSyncCharacteristic = nil
             self.wearableLocation = nil
             self.peerLocation = nil
             self.currentTrackedMAC = nil
@@ -556,6 +699,7 @@ extension BLEManager: CBPeripheralDelegate {
                     peerLocationCharacteristicUUID,
                     candidatesCharacteristicUUID,
                     selectedTargetCharacteristicUUID,
+                    gpsSyncCharacteristicUUID,
                 ], for: service
             )
         }
@@ -616,6 +760,11 @@ extension BLEManager: CBPeripheralDelegate {
                 if characteristic.properties.contains(.read) {
                     peripheral.readValue(for: characteristic)
                 }
+            } else if characteristic.uuid == gpsSyncCharacteristicUUID {
+                DispatchQueue.main.async { self.gpsSyncCharacteristic = characteristic }
+                if characteristic.properties.contains(.notify) {
+                    peripheral.setNotifyValue(true, for: characteristic)
+                }
             }
         }
     }
@@ -671,6 +820,10 @@ extension BLEManager: CBPeripheralDelegate {
             }
             if characteristic.uuid == selectedTargetCharacteristicUUID {
                 self.handleSelectedTargetPayload(data)
+                return
+            }
+            if characteristic.uuid == gpsSyncCharacteristicUUID {
+                self.handleGpsSyncPayload(data)
                 return
             }
             self.lastReceivedData = data

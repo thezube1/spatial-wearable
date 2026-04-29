@@ -17,6 +17,7 @@ Firmware: `arduino/10_wearable_persistent_pairing/10_wearable_persistent_pairing
 | Peer-location | `12345678-1234-5678-1234-56781234abd3` | READ, NOTIFY | 9-byte payload carrying the *target* peer's GPS forwarded from ESP-NOW. Same layout as Location (`valid(u8) | lat(f32 LE) | lon(f32 LE)`). Notified every ~3 s, and immediately when the target changes or clears (valid=0). Added in firmware `14_wearable_peer_location`. |
 | Candidate list | `12345678-1234-5678-1234-56781234abd4` | WRITE | Owner-auth gated. iOS pushes up to 8 group members the wearer can cycle through and confirm on the watch. Wire format: `[u8 count]` then per entry `[6-byte MAC][u8 nameLen][nameLen UTF-8]`. `count=0` clears. Added in firmware `16_wearable_group_targets`. |
 | Selected target | `12345678-1234-5678-1234-56781234abd5` | READ, NOTIFY | 6-byte MAC of the wearable's currently-tracked target; all-`0xFF` means "no target". Source of truth for the iOS Group screen badge. Notified on watch long-press confirm, on phone `abd2` writes (mirrored), and on stale-target prune. Added in firmware `16_wearable_group_targets`. |
+| GPS sync | `12345678-1234-5678-1234-56781234abd6` | READ, WRITE, NOTIFY | Owner-auth gated. iOS writes a single `0x01` byte to ask the wearable to enter a 30-second focused-fix mode (radios off). Wearable notifies a 2-byte payload `[status(u8), secondsRemaining(u8)]` reporting state transitions: `0x01`=running, `0x02`=success (fresh fix acquired), `0x03`=failed (timed out). Added in firmware `18_wearable_gps_sync`. |
 
 ## Persistent State (NVS)
 
@@ -177,3 +178,36 @@ A short tap on the NAV screen enters target-select sub-mode when the candidate l
 - **Triple-tap SOS is gated off** while selecting — three rapid taps cycle candidates rather than triggering SOS.
 
 The first tap on entry pre-seeds the index to the currently-tracked target if it's in the list (so cycling starts from the wearer's current selection).
+
+## GPS Sync (firmware 18)
+
+The GPS-sync characteristic (`abd6`) is a user-initiated escape hatch for the case where the GNSS chipset can see satellites but never converges to a fix because of in-band desense from BLE/WiFi/ESP-NOW radios on the same module. Empirically, with all radios off the chipset acquires a fix in ~30 s on the same hardware that doesn't converge at all with radios up (see `arduino/gps_fix_tests/17_wearable_radios_off`).
+
+**Trigger:** iOS writes the single byte `0x01` to `abd6`. Owner-auth gated; writes are rejected on connections that haven't completed auth via `abd0`. Other payloads are ignored.
+
+**Response payload:** 2 bytes — `[status(u8), secondsRemaining(u8)]`.
+
+| Status | Meaning |
+|---|---|
+| `0x00` | Idle — no sync recently. Initial value on a fresh connection. |
+| `0x01` | Running — radios are about to come down (or are down). `secondsRemaining` is meaningful (30 on entry, decreasing). |
+| `0x02` | Success — a fresh fix was acquired during the 30-second window. iOS will receive an `abd1` location notify with the new lat/lon shortly after. |
+| `0x03` | Failed — 30 seconds elapsed without a fresh fix. |
+
+**Lifecycle on the wearable:**
+
+1. iOS write lands. Firmware sets a "trigger pending" flag and returns from the BLE callback.
+2. Next loop tick: the wearable fires one `abd6` notify with status `0x01` and waits ~250 ms for it to drain over the air.
+3. Wearable disconnects the central, deinits NimBLE, deinits ESP-NOW, and brings WiFi off.
+4. Wearable runs a focused 30 s loop reading the GPS UART exclusively and redrawing a countdown screen on the watch face. Exits early on the first fresh fix (`gps.location.isValid() && gps.location.age() < 3000`).
+5. WiFi → ESP-NOW → BLE come back up in `setup()` order. The wearable re-advertises and resumes normal operation.
+6. The result (success or failed) is latched for 60 seconds. On the next owner-auth success, the firmware notifies `abd6` with the result up to five times at 500 ms intervals (BLE notifications are unreliable, especially right after re-discovery; repeating raises the chances iOS catches at least one). The location-notify cadence is also reset so a fresh fix lands on the phone within a single loop iteration.
+
+**iOS behavior:**
+
+- Map page shows a "Sync GPS" CTA inside the existing "Waiting for GPS fix" placeholder when the wearable is connected but `BLEManager.wearableLocation` is `nil`.
+- Tapping the CTA writes `0x01` to `abd6` and immediately starts a local 30-second countdown overlay. The local countdown is the source of truth for the running UI — it keeps ticking through the BLE drop and reconnect.
+- On a `status=success` notify, the overlay flashes "GPS Synced" and dismisses after 3 s.
+- On a `status=failed` notify, the overlay shows "Sync Failed" with a "Try Again" button.
+- A 60-second outer timeout in `BLEManager.startLocalGpsSyncCountdown()` resolves to `.failed` if no terminal status arrives — covers the case where the wearable never reconnects (e.g. it crashed, ran out of battery, or moved out of BLE range).
+- The dashboard's existing reconnect loop (`DashboardView.reconnectLoop`) handles bringing the BLE link back up after the wearable's radios cycle; no special re-establish logic is needed for the sync path.
