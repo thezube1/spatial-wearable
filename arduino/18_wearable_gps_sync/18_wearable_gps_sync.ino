@@ -28,17 +28,23 @@
 //      L1 front end enough that satellites are visible but a fix never
 //      converges. With radios fully off, sketch 02_gps_test reliably gets
 //      a fix in ~30 s on the same hardware (see arduino/gps_fix_tests/
-//      17_wearable_radios_off). The sync flow:
-//        1. iOS writes 0x01 to abd6. Firmware fires one "running" notify
-//           so the phone sees the start, then defers the actual sync to
-//           the main loop (out of BLE callback context).
-//        2. Force-disconnect the central; deinit NimBLE, ESP-NOW, WiFi.
-//        3. Run a 30 s focused loop reading GPS UART + redrawing a
-//           countdown screen. Exit early on the first fresh fix.
-//        4. Bring WiFi → ESP-NOW → BLE back up in setup() order.
-//        5. Latch the result for 60 s; on the next owner-auth success,
-//           push status=success/failed via abd6 and force an immediate
-//           abd1 location notify.
+//      17_wearable_radios_off).
+//    - SYNC FLOW (reboot-based — an earlier in-process attempt to
+//      `NimBLEDevice::deinit()` mid-loop crashed the host task with
+//      InstrFetchProhibited; rebooting gives us a pristine RF environment
+//      that matches the radios-off diag sketch exactly):
+//        1. iOS writes 0x01 to abd6. Firmware fires a "running" notify
+//           and persists `syncpend=true` to NVS, then ESP.restart()s.
+//        2. setup() detects the flag *before any radio init* and routes
+//           into runFocusedFixOnBoot(): display + GPS UART only, no
+//           WiFi / ESP-NOW / NimBLE at all. 30 s countdown loop with an
+//           early-exit on first fresh fix. Result (success/failed) is
+//           persisted to NVS and the device reboots a second time.
+//        3. The clean boot picks up the persisted result, runs all the
+//           usual radio init, and the existing latched-result path
+//           pushes it over abd6 once iOS re-auths.
+//      Total user-visible blackout: ~40 s. iOS's 60 s outer timeout and
+//      DashboardView.reconnectLoop handle the BLE round-trip transparently.
 //
 // ============================================================
 
@@ -88,12 +94,16 @@
 // - NAV target-select sub-mode (entered by a short tap on NAV when the
 //   candidate list is non-empty): each subsequent short tap cycles to the
 //   next candidate; hold 3s to confirm and start tracking; 8s of inactivity
-//   exits without changes. While selecting, sleep (5s hold) and SOS (triple
-//   tap) are gated off — release the button to exit select mode first.
+//   exits without changes. Sleep (5s hold) is gated off while selecting —
+//   release the button to exit select mode first. SOS is reachable from
+//   select mode via a fast triple tap (see below); cycling at normal reading
+//   pace will not trigger it.
 // - Any non–Power-OFF screen (HOME / NAV / pairing / SOS): hold 5s -> Power OFF.
 // - SOS: hold 3s -> back to previous screen (if released before 5s global sleep).
 // - Power OFF UI: hold 3s wake -> HOME; hold 12s -> factory clear NVS, then HOME.
-// - HOME / NAV: triple short press within 2s -> SOS (NAV gated off while selecting).
+// - HOME / NAV (incl. select sub-mode): three short presses within 600ms ->
+//   SOS. Tight window so deliberate panic taps escalate even mid-cycle, while
+//   normal cycling cadence (>~250ms between taps) cannot.
 //
 #define UI_HOLD_SLEEP_MS            5000UL
 #define UI_HOLD_WAKE_FROM_SLEEP_MS  3000UL
@@ -105,7 +115,7 @@
 #define UI_HOLD_EXIT_SOS_MS         3000UL
 #define UI_HOLD_FACTORY_FROM_SLEEP_MS 12000UL
 
-#define UI_TRIPLE_WINDOW_MS         2000UL  // all 3 short presses must complete within this window
+#define UI_TRIPLE_WINDOW_MS          600UL  // all 3 short presses must complete within this window (tight so cycling at reading pace can't trip SOS)
 #define UI_SHORT_PRESS_MAX_MS       650UL   // treat release as "short" if <= this
 
 // Target-select sub-mode of NAV: short tap = cycle, hold 3s = confirm, idle 8s = cancel.
@@ -377,6 +387,13 @@ const char* PREFS_KEY_OWNER  = "owner";
 const char* PREFS_KEY_TMAC   = "tmac";
 const char* PREFS_KEY_TNAME  = "tname";
 const char* PREFS_KEY_CANDS  = "cands";  // packed candidate list (group members with linked devices)
+// GPS sync (firmware 18). syncpend=true on boot means we should skip all
+// radio init and go straight into the focused-fix loop. syncres holds the
+// terminal status (GPS_SYNC_SUCCESS / GPS_SYNC_FAILED) the focused-fix
+// loop wrote on its way out; the next clean boot picks it up and the
+// existing pushLatchedGpsSyncResult() flow notifies iOS.
+const char* PREFS_KEY_SYNC_PENDING = "syncpend";
+const char* PREFS_KEY_SYNC_RESULT  = "syncres";
 
 bool     isPaired        = false;
 String   ownerId         = "";          // Supabase user_id (UUID, 36 chars)
@@ -1118,9 +1135,13 @@ class OwnerWriteCallbacks : public NimBLECharacteristicCallbacks {
   }
 };
 
-// Forward declaration — defined further down with the rest of the GPS-sync
-// machinery (Arduino's auto-prototype generator skips static functions).
+// Forward declarations for the GPS-sync machinery defined later in the
+// file. `pushLatchedGpsSyncResult` is static so Arduino's auto-prototype
+// generator skips it; `runFocusedFixOnBoot` carries an attribute that
+// the generator sometimes drops, so we declare it explicitly too.
 static void pushLatchedGpsSyncResult();
+[[noreturn]] void runFocusedFixOnBoot();
+void triggerSyncReboot();
 
 class OwnerAuthCallbacks : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic* c, NimBLEConnInfo& info) override {
@@ -1336,6 +1357,14 @@ static void enterSleepUiOverlay() {
 static void armSosFromTripleTap() {
   if (uiScreen == UI_SOS) return;
   uiShowPairingAfterWake = false;
+  // Clear NAV select sub-mode if it was active — the triple tap can come
+  // mid-cycle, and on SOS exit we restore uiBeforeSos = NAV; we don't want
+  // stale select state to reappear over the NAV view.
+  navSelectActive = false;
+  navSelectIndex = -1;
+  navSelectConfirmLatched = false;
+  navSelectConfirmFlashUntil = 0;
+  navSelectSuppressShortRelease = false;
   uiBeforeSos = uiScreen;
   uiScreen = UI_SOS;
   uiShortPressCount = 0;
@@ -1494,52 +1523,49 @@ void updateUiButton() {
         uiShortPressCount = 0;
         uiTripleWindowStartMs = 0;
         forceRedraw = true;
-      } else if (shortPress && uiScreen == UI_NAV && navSelectActive) {
-        // Cycle to next candidate. Triple-tap SOS is gated off while selecting.
-        if (candidateCount > 0) {
-          navSelectIndex = (navSelectIndex + 1) % (int8_t)candidateCount;
-        }
-        navSelectLastInteractionMs = now;
-        uiShortPressCount = 0;
-        uiTripleWindowStartMs = 0;
-        forceRedraw = true;
-        Serial.printf("[SELECT] Cycle -> %d/%u\n", (int)navSelectIndex + 1, candidateCount);
-      } else if (shortPress && uiScreen == UI_NAV && !navSelectActive && candidateCount > 0) {
-        // Enter select mode on a quick tap when there are candidates. The first
-        // tap acts as "show first candidate" so cycling N taps lands on N-th.
-        navSelectActive = true;
-        navSelectIndex = 0;
-        // Pre-seed the index so currently-tracked target appears first if present.
-        if (hasTarget) {
-          for (uint8_t i = 0; i < candidateCount; i++) {
-            if (memcmp(candidates[i].mac, targetMac, 6) == 0) {
-              navSelectIndex = (int8_t)i;
-              break;
-            }
-          }
-        }
-        navSelectLastInteractionMs = now;
-        uiShortPressCount = 0;
-        uiTripleWindowStartMs = 0;
-        forceRedraw = true;
-        Serial.printf("[SELECT] Enter -> %d/%u\n", (int)navSelectIndex + 1, candidateCount);
       } else if (shortPress && (uiScreen == UI_NAV || uiScreen == UI_HOME)) {
-        if (uiShortPressCount == 0) {
+        // Unified short-press handler for NAV (incl. select sub-mode) and HOME.
+        // Every short press counts toward the triple-tap-SOS detector with a
+        // tight window (UI_TRIPLE_WINDOW_MS = 600ms). If the burst threshold
+        // is hit, SOS pre-empts whatever the per-state action would have been
+        // — including cycling candidates in select mode. Otherwise, fall
+        // through to the per-state action (cycle / enter select / no-op).
+        if (uiShortPressCount == 0 || (now - uiTripleWindowStartMs) > UI_TRIPLE_WINDOW_MS) {
           uiShortPressCount = 1;
           uiTripleWindowStartMs = now;
         } else {
-          if (now - uiTripleWindowStartMs > UI_TRIPLE_WINDOW_MS) {
-            // Window expired; restart counting from this press.
-            uiShortPressCount = 1;
-            uiTripleWindowStartMs = now;
-          } else {
-            uiShortPressCount++;
-          }
+          uiShortPressCount++;
         }
 
         if (uiShortPressCount >= 3 && (now - uiTripleWindowStartMs) <= UI_TRIPLE_WINDOW_MS) {
           armSosFromTripleTap();
+        } else if (uiScreen == UI_NAV && navSelectActive) {
+          // Cycle to next candidate.
+          if (candidateCount > 0) {
+            navSelectIndex = (navSelectIndex + 1) % (int8_t)candidateCount;
+          }
+          navSelectLastInteractionMs = now;
+          forceRedraw = true;
+          Serial.printf("[SELECT] Cycle -> %d/%u\n", (int)navSelectIndex + 1, candidateCount);
+        } else if (uiScreen == UI_NAV && candidateCount > 0) {
+          // Enter select mode on a quick tap when there are candidates. The
+          // first tap acts as "show first candidate" so cycling N taps lands
+          // on the N-th. Pre-seed to currently-tracked target if present.
+          navSelectActive = true;
+          navSelectIndex = 0;
+          if (hasTarget) {
+            for (uint8_t i = 0; i < candidateCount; i++) {
+              if (memcmp(candidates[i].mac, targetMac, 6) == 0) {
+                navSelectIndex = (int8_t)i;
+                break;
+              }
+            }
+          }
+          navSelectLastInteractionMs = now;
+          forceRedraw = true;
+          Serial.printf("[SELECT] Enter -> %d/%u\n", (int)navSelectIndex + 1, candidateCount);
         }
+        // HOME short tap with no candidates / not-yet-triple: no-op (matches prior behavior).
       } else if (shortPress && (uiScreen == UI_SLEEP || uiScreen == UI_SOS)) {
         // Don't interpret short taps as triple-press while overlays are active.
         uiShortPressCount = 0;
@@ -1922,53 +1948,68 @@ static void pushLatchedGpsSyncResult() {
   }
 }
 
-// The blocking-ish 30 s sync. Called from loop() when gpsSyncTriggerPending
-// is set. Side effects:
-//   - tears down NimBLE / ESP-NOW / WiFi
-//   - drives the LCD with a countdown screen
-//   - reads GPS UART exclusively
-//   - brings the radios back up in setup() order
-//   - latches a result for the next owner-auth to push
-void runGpsSyncBlocking() {
+// Persist the trigger and reboot. Called from loop() when
+// gpsSyncTriggerPending is set. We notify "running" first so iOS sees the
+// start before we drop off the air, then write the NVS flag and restart.
+//
+// In-process radio teardown (NimBLEDevice::deinit + esp_now_deinit + WiFi
+// off) crashes the NimBLE host task on this build with PC=0 / EXCCAUSE=0x14
+// — the disconnect that we triggered is still being processed when deinit
+// frees the host's memory. Rebooting sidesteps the race entirely and gives
+// the focused-fix path a pristine RF environment that exactly matches the
+// `gps_fix_tests/17_wearable_radios_off` diagnostic sketch.
+void triggerSyncReboot() {
   gpsSyncActive = true;
-  unsigned long syncStart = millis();
-  Serial.println("[SYNC] === ENTERING SYNC ===");
+  Serial.println("[SYNC] === ENTERING SYNC (reboot path) ===");
 
-  // Phase 1: notify iOS that the sync is starting. We do this BEFORE tearing
-  // down BLE so the notify packet has a chance to clear the air.
+  // Notify "running" while BLE is still up. NimBLE will queue the notify
+  // PDU + the upcoming disconnect into the same connection event window;
+  // a 300 ms drain is empirically enough on iOS.
   if (pGpsSyncCharacteristic) {
     uint8_t buf[2] = { GPS_SYNC_RUNNING, (uint8_t)(GPS_SYNC_DURATION_MS / 1000) };
     pGpsSyncCharacteristic->setValue(buf, 2);
     pGpsSyncCharacteristic->notify();
   }
-  // Drive a frame of the countdown UI so the wearer sees the transition the
-  // instant the trigger lands, not 30 s later.
-  gpsSyncPrevSeconds = -1;  // force first draw
   drawGpsSyncScreen(GPS_SYNC_DURATION_MS / 1000);
-  delay(GPS_SYNC_NOTIFY_FLUSH_MS);
+  delay(300);
 
-  // Phase 2: tear down radios. The order matters — disconnect any active
-  // central first (so iOS sees a clean disconnect rather than a phantom
-  // connection that NimBLE deinit silently kills), then deinit BLE, then
-  // ESP-NOW (which sits on top of WiFi), then WiFi itself.
-  if (pBleServer && hasActiveConn) {
-    pBleServer->disconnect(currentConnHandle);
-    delay(150);
-  }
-  stopBLE();
-  esp_now_deinit();
-  WiFi.disconnect(true /*wifioff*/);
-  WiFi.mode(WIFI_OFF);
-  esp_wifi_stop();
-  Serial.println("[SYNC] Radios off, polling GPS for fix");
+  // Persist the flag and clear any stale result from a previous run.
+  prefs.begin(PREFS_NAMESPACE, false);
+  prefs.putBool(PREFS_KEY_SYNC_PENDING, true);
+  prefs.remove(PREFS_KEY_SYNC_RESULT);
+  prefs.end();
+  Serial.println("[SYNC] Persisted syncpend=1, restarting...");
+  delay(50);
+  ESP.restart();
+}
 
-  // Phase 3: focused poll. Capture the GPS char counter so we can detect
-  // *progress* (UART traffic flowing) for diagnostics, and exit early on a
-  // fresh fix. `gps.location.age()` is millis-based and ticks while we sleep
-  // here, so a stale pre-sync fix won't satisfy the freshness check.
+// Run when setup() detects syncpend=true in NVS. Brings up only the display
+// and GPS UART — no WiFi, no ESP-NOW, no NimBLE — and reads GPS for up to
+// 30 s. On exit, writes the result to NVS and reboots back into normal
+// mode. This function never returns.
+[[noreturn]] void runFocusedFixOnBoot() {
+  Serial.println("[SYNC-BOOT] === FOCUSED FIX MODE ===");
+  Serial.println("[SYNC-BOOT] Skipping all radio init; display + GPS UART only");
+
+  // Display init (SPI; not a radio).
+  tft.begin();
+  tft.setRotation(0);
+  tft.fillScreen(COLOR_BG);
+  drawGpsSyncScreen(GPS_SYNC_DURATION_MS / 1000);
+
+  // GPS UART init — same pins/baud as setup().
+  Serial1.begin(9600, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+
+  // Motor pin is left as input so the haptic doesn't accidentally fire
+  // while we're in this stripped-down mode.
+  pinMode(MOTOR_PIN, OUTPUT);
+  digitalWrite(MOTOR_PIN, LOW);
+
+  unsigned long syncStart = millis();
   unsigned long pollLastDisplay = 0;
   unsigned long pollLastLog = 0;
   bool gotFix = false;
+
   while (millis() - syncStart < GPS_SYNC_DURATION_MS) {
     while (Serial1.available()) {
       gps.encode(Serial1.read());
@@ -1984,7 +2025,7 @@ void runGpsSyncBlocking() {
     if (now - pollLastLog >= 1000) {
       pollLastLog = now;
       int sats = gps.satellites.isValid() ? gps.satellites.value() : 0;
-      Serial.printf("[SYNC t=%2lus] view used=%d  fix=%s  age=%lums  chars=%lu\n",
+      Serial.printf("[SYNC-BOOT t=%2lus] used=%d  fix=%s  age=%lums  chars=%lu\n",
                     (now - syncStart) / 1000, sats,
                     gps.location.isValid() ? "Y" : "N",
                     gps.location.age(), gps.charsProcessed());
@@ -1992,7 +2033,7 @@ void runGpsSyncBlocking() {
 
     if (gps.location.isValid() && gps.location.age() < GPS_SYNC_FRESH_AGE_MS) {
       gotFix = true;
-      Serial.printf("[SYNC] *** FRESH FIX at t=%lums *** lat=%.6f lon=%.6f\n",
+      Serial.printf("[SYNC-BOOT] *** FRESH FIX at t=%lums *** lat=%.6f lon=%.6f\n",
                     millis() - syncStart, gps.location.lat(), gps.location.lng());
       break;
     }
@@ -2000,51 +2041,26 @@ void runGpsSyncBlocking() {
     delay(10);
   }
 
-  Serial.printf("[SYNC] Poll done after %lums — result=%s\n",
+  Serial.printf("[SYNC-BOOT] Done after %lums — %s\n",
                 millis() - syncStart, gotFix ? "SUCCESS" : "FAILED");
 
-  // Phase 4: bring radios back up in the same order as setup(). WiFi must be
-  // up before ESP-NOW init, and before BLE so the MAC-derived advertising
-  // name stays consistent.
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
-  delay(500);
-  esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
+  // Persist the result and clear the pending flag. The next clean boot
+  // (below) reads syncres and the existing latched-result push notifies iOS.
+  prefs.begin(PREFS_NAMESPACE, false);
+  prefs.remove(PREFS_KEY_SYNC_PENDING);
+  prefs.putUChar(PREFS_KEY_SYNC_RESULT,
+                 gotFix ? GPS_SYNC_SUCCESS : GPS_SYNC_FAILED);
+  prefs.end();
 
-  if (esp_now_init() == ESP_OK) {
-    esp_now_register_send_cb(onDataSent);
-    esp_now_register_recv_cb(onDataRecv);
-    esp_now_peer_info_t peerInfo = {};
-    memcpy(peerInfo.peer_addr, broadcastAddr, 6);
-    peerInfo.channel = 1;
-    peerInfo.encrypt = false;
-    if (esp_now_add_peer(&peerInfo) != ESP_OK) {
-      Serial.println("[SYNC] WARN: ESP-NOW peer re-add failed");
-    }
-  } else {
-    Serial.println("[SYNC] WARN: ESP-NOW re-init failed");
-  }
-
-  startBLE();
-  Serial.println("[SYNC] Radios back up");
-
-  // Phase 5: latch the result. iOS will reconnect via the dashboard's
-  // reconnect loop and re-auth; the auth handler then drains the latched
-  // result via abd6 so the in-progress overlay on the phone resolves.
-  gpsSyncResult       = gotFix ? GPS_SYNC_SUCCESS : GPS_SYNC_FAILED;
-  gpsSyncResultAt     = millis();
-  gpsSyncResultPushed = false;
-  gpsSyncPushCount    = 0;
-  gpsSyncLastPushAt   = 0;
-
-  // Show a brief result flash on the watch before normal UI resumes.
   drawGpsSyncResultScreen(gotFix);
-  delay(1200);
+  delay(1500);
 
-  forceRedraw      = true;
-  gpsSyncActive    = false;
-  gpsSyncPrevSeconds = -1;
-  Serial.println("[SYNC] === EXIT ===");
+  Serial.println("[SYNC-BOOT] Restarting into normal mode");
+  delay(50);
+  ESP.restart();
+  // Unreachable — keeps the [[noreturn]] contract honest if ESP.restart()
+  // ever returns on a future SDK.
+  while (true) { delay(1000); }
 }
 
 // =====================================================
@@ -2613,6 +2629,25 @@ void setup() {
   Serial.println("  Spatial Wearable — GPS Sync (18)");
   Serial.println("==========================================");
 
+  // GPS-sync re-entry check. If this boot was caused by a sync trigger
+  // (loop() persisted syncpend=true and ESP.restart()ed), divert to the
+  // focused-fix path BEFORE any radio init. runFocusedFixOnBoot() never
+  // returns — it reboots a second time once the 30 s poll finishes.
+  prefs.begin(PREFS_NAMESPACE, false);
+  bool syncPendingFromNvs = prefs.getBool(PREFS_KEY_SYNC_PENDING, false);
+  uint8_t syncResultFromNvs = prefs.getUChar(PREFS_KEY_SYNC_RESULT, GPS_SYNC_IDLE);
+  // Clear the result key so we don't keep re-pushing it forever; it lives
+  // only in RAM (gpsSyncResult) from this point on.
+  if (syncResultFromNvs != GPS_SYNC_IDLE) {
+    prefs.remove(PREFS_KEY_SYNC_RESULT);
+  }
+  prefs.end();
+
+  if (syncPendingFromNvs) {
+    Serial.println("[SETUP] syncpend=1 — entering focused-fix mode");
+    runFocusedFixOnBoot();   // [[noreturn]]
+  }
+
   pinMode(MOTOR_PIN, OUTPUT);
   digitalWrite(MOTOR_PIN, LOW);
 
@@ -2620,6 +2655,19 @@ void setup() {
   pairingMode = false;
   uiScreen = UI_HOME;
   pairingEnteredAt = millis();
+
+  // If the focused-fix path ran on the previous boot, surface its result.
+  // The existing pushLatchedGpsSyncResult() flow notifies iOS the next time
+  // the central completes owner-auth. The 60 s TTL starts ticking at boot.
+  if (syncResultFromNvs == GPS_SYNC_SUCCESS || syncResultFromNvs == GPS_SYNC_FAILED) {
+    gpsSyncResult       = syncResultFromNvs;
+    gpsSyncResultAt     = millis();
+    gpsSyncResultPushed = false;
+    gpsSyncPushCount    = 0;
+    gpsSyncLastPushAt   = 0;
+    Serial.printf("[SETUP] Latched sync result from NVS: %s\n",
+                  syncResultFromNvs == GPS_SYNC_SUCCESS ? "SUCCESS" : "FAILED");
+  }
 
   Wire.begin(5, 6);
   Serial.print("[MAX30102] ");
@@ -2689,12 +2737,13 @@ void setup() {
 
 void loop() {
   // Drain a pending GPS-sync trigger before doing anything else this tick.
-  // runGpsSyncBlocking() owns the radios for ~30 s and drives the LCD with
-  // its own countdown UI; everything below is short-circuited until it
-  // returns and `forceRedraw` brings the normal screen back.
+  // triggerSyncReboot() persists to NVS and ESP.restart()s — it does not
+  // return. The next boot detects the flag in setup() and runs the
+  // focused-fix poll with no radios initialized at all (avoids the NimBLE
+  // host-task crash we hit when deinit()ing in-process).
   if (gpsSyncTriggerPending && !gpsSyncActive) {
     gpsSyncTriggerPending = false;
-    runGpsSyncBlocking();
+    triggerSyncReboot();
     return;
   }
 

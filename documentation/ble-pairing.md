@@ -194,14 +194,19 @@ The GPS-sync characteristic (`abd6`) is a user-initiated escape hatch for the ca
 | `0x02` | Success — a fresh fix was acquired during the 30-second window. iOS will receive an `abd1` location notify with the new lat/lon shortly after. |
 | `0x03` | Failed — 30 seconds elapsed without a fresh fix. |
 
-**Lifecycle on the wearable:**
+**Lifecycle on the wearable (reboot-based):**
+
+An earlier in-process implementation deinit'ed NimBLE / ESP-NOW / WiFi mid-loop. This crashed the NimBLE host task with `InstrFetchProhibited` (PC=0) — the disconnect we triggered was still being processed when `NimBLEDevice::deinit(true)` freed the host's memory. The shipped flow reboots instead, which gives the focused-fix path a pristine RF environment that exactly matches the `gps_fix_tests/17_wearable_radios_off` diagnostic sketch.
 
 1. iOS write lands. Firmware sets a "trigger pending" flag and returns from the BLE callback.
-2. Next loop tick: the wearable fires one `abd6` notify with status `0x01` and waits ~250 ms for it to drain over the air.
-3. Wearable disconnects the central, deinits NimBLE, deinits ESP-NOW, and brings WiFi off.
-4. Wearable runs a focused 30 s loop reading the GPS UART exclusively and redrawing a countdown screen on the watch face. Exits early on the first fresh fix (`gps.location.isValid() && gps.location.age() < 3000`).
-5. WiFi → ESP-NOW → BLE come back up in `setup()` order. The wearable re-advertises and resumes normal operation.
-6. The result (success or failed) is latched for 60 seconds. On the next owner-auth success, the firmware notifies `abd6` with the result up to five times at 500 ms intervals (BLE notifications are unreliable, especially right after re-discovery; repeating raises the chances iOS catches at least one). The location-notify cadence is also reset so a fresh fix lands on the phone within a single loop iteration.
+2. Next loop tick: the wearable fires one `abd6` notify with status `0x01`, redraws the LCD with the countdown screen, waits 300 ms for the notify to drain, persists `syncpend=true` to NVS, and calls `ESP.restart()`.
+3. On the fresh boot, `setup()` reads the NVS flag *before any radio init* and routes into `runFocusedFixOnBoot()`. Only the GC9A01 display and the GPS UART (`Serial1`) are brought up. No WiFi, no ESP-NOW, no NimBLE.
+4. `runFocusedFixOnBoot()` polls GPS for up to 30 seconds, redrawing the countdown every 500 ms. Exits early on the first fresh fix (`gps.location.isValid() && gps.location.age() < 3000`).
+5. The result (`GPS_SYNC_SUCCESS` or `GPS_SYNC_FAILED`) is persisted to NVS under `syncres`, the `syncpend` flag is cleared, the LCD shows a 1.5 s success/failure flash, and the wearable reboots a second time.
+6. The clean boot reads `syncres` from NVS, latches it into RAM (clearing the NVS key in the same NVS open), and runs the usual radio init. The result is now in the same "latched, awaiting iOS auth" state as the earlier in-process design.
+7. On the next owner-auth success, the firmware notifies `abd6` with the result up to five times at 500 ms intervals (BLE notifications are unreliable, especially right after re-discovery; repeating raises the chances iOS catches at least one). The location-notify cadence is also reset so a fresh fix lands on the phone within a single loop iteration.
+
+**Total user-visible blackout:** ~40 seconds (5 s reboot + 30 s focused fix + 5 s reboot). iOS's 90-second outer timeout in `BLEManager.startLocalGpsSyncCountdown()` covers this round-trip with comfortable headroom. The `DashboardView.reconnectLoop` re-establishes the BLE link automatically once the wearable is back on the air.
 
 **iOS behavior:**
 
@@ -209,5 +214,5 @@ The GPS-sync characteristic (`abd6`) is a user-initiated escape hatch for the ca
 - Tapping the CTA writes `0x01` to `abd6` and immediately starts a local 30-second countdown overlay. The local countdown is the source of truth for the running UI — it keeps ticking through the BLE drop and reconnect.
 - On a `status=success` notify, the overlay flashes "GPS Synced" and dismisses after 3 s.
 - On a `status=failed` notify, the overlay shows "Sync Failed" with a "Try Again" button.
-- A 60-second outer timeout in `BLEManager.startLocalGpsSyncCountdown()` resolves to `.failed` if no terminal status arrives — covers the case where the wearable never reconnects (e.g. it crashed, ran out of battery, or moved out of BLE range).
+- A 90-second outer timeout in `BLEManager.startLocalGpsSyncCountdown()` resolves to `.failed` if no terminal status arrives — covers the case where the wearable never reconnects (e.g. it crashed, ran out of battery, or moved out of BLE range). The longer timeout (vs. 30 s sync window) is deliberate: the firmware double-reboots, so the BLE round-trip can run ~50 s in worst-case timing.
 - The dashboard's existing reconnect loop (`DashboardView.reconnectLoop`) handles bringing the BLE link back up after the wearable's radios cycle; no special re-establish logic is needed for the sync path.

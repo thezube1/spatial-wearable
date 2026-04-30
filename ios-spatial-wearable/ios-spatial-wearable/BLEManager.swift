@@ -348,7 +348,7 @@ final class BLEManager: NSObject, @unchecked Sendable {
     /// a 30 s countdown. The BLE link will drop almost instantly (the
     /// wearable kills its radios) and the dashboard's reconnect loop will
     /// bring it back up; the wearable then notifies us with success/failed
-    /// over abd6 once we've re-authed. The outer 60 s timeout protects
+    /// over abd6 once we've re-authed. The outer 90 s timeout protects
     /// against the wearable never coming back at all.
     func requestGpsSync() async throws {
         // Flip the UI to "running" before issuing the write so the user
@@ -357,17 +357,17 @@ final class BLEManager: NSObject, @unchecked Sendable {
         do {
             try await writeData(Data([0x01]), toCharacteristic: gpsSyncCharacteristicUUID)
         } catch {
-            // The wearable may disconnect between accepting the write and
-            // sending the BLE response. CoreBluetooth surfaces that as a
-            // write error; we swallow it because the trigger has already
-            // landed (we'll see the abd6 notify on reconnect).
-            // If the write actually failed *before* delivery, our 60 s
-            // outer timeout will mark this as failed.
+            // The wearable disconnects ~300 ms after accepting this write
+            // (firmware 18 reboots into focused-fix mode), so it's normal
+            // for CoreBluetooth to surface a write error here even though
+            // the trigger landed cleanly. We swallow it; the abd6 notify
+            // on reconnect resolves the state. If the write actually failed
+            // *before* delivery, our 90 s outer timeout marks it as failed.
         }
     }
 
     /// MUST be called on the main thread. Resets timers, sets the .running
-    /// state, kicks off the per-second countdown, and arms the 60 s outer
+    /// state, kicks off the per-second countdown, and arms the 90 s outer
     /// timeout that resolves to .failed if the wearable never reports back.
     private func startLocalGpsSyncCountdown() {
         gpsSyncCountdownTimer?.invalidate()
@@ -396,11 +396,14 @@ final class BLEManager: NSObject, @unchecked Sendable {
             }
         }
 
-        // Outer timeout: 60 s from request. Covers every failure mode
-        // (wearable never reconnects, abd6 notify dropped, etc.) by falling
-        // through to .failed so the user can retry.
+        // Outer timeout: 90 s from request. The wearable's sync flow does a
+        // double reboot (boot → focused fix → reboot → normal init → BLE
+        // re-advertise), so the round-trip can run ~50 s in worst-case
+        // boot/scan timing. 90 s gives that comfortable headroom while
+        // still capping the UI on a wearable that genuinely never comes
+        // back (battery dead, out of range).
         gpsSyncTimeoutTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(60))
+            try? await Task.sleep(for: .seconds(90))
             DispatchQueue.main.async {
                 guard let self else { return }
                 if case .running = self.gpsSyncState {
