@@ -20,30 +20,47 @@
 //    Motor IN     --> D0  (GPIO1)
 //    UI button (tactile) --> D9 (GPIO8) + GND (active LOW). Do NOT use D10/GPIO9 — that pad is SPI MOSI to the LCD.
 //
-//  BEHAVIOR (firmware 18 — GPS sync):
-//    - All firmware-17 features intact (group SOS, candidate cycling,
-//      target select, peer location forwarding, persistent pairing, …).
-//    - NEW: GPS-sync characteristic (…abd6) lets iOS request a focused fix.
+//  BEHAVIOR (firmware 20 — deep sleep on Power OFF):
+//    - All firmware-19 features intact (tracking-screen polish, GPS-sync,
+//      group SOS, candidate cycling, persistent pairing, …).
+//    - NEW: the 5-second hold gesture that previously showed a "Power OFF"
+//      placeholder now puts the wearable into ESP32-S3 *deep sleep*, with
+//      wake configured on the UI button (GPIO8 / D9, EXT0 wake on LOW).
+//      Pressing the button cold-boots the device back to HOME. The wake
+//      press is suppressed in updateUiButton() until first release so the
+//      same press that wakes the device cannot also re-arm the 5 s sleep.
+//    - HOME screen first option re-labelled "1s-Tracking" (was
+//      "1s-Connecting") to reflect what a 1 s release actually does.
+//    - Pre-sleep teardown (best-effort with the current hardware — the
+//      Teyleten 7-pin GC9A01 has no software-controlled backlight, and the
+//      GPS breakout has no enable pin, so those modules stay powered on
+//      the always-on 3V3 LDO rail; the ESP itself drops to ~14 µA):
+//        * GC9A01 panel cmd 0x10 (sleep IN) — panel logic to µA, backlight
+//          stays on as long as 3V3 is up.
+//        * MAX30102 shutDown() — heart-rate sensor to standby (~0.7 µA).
+//        * NimBLEDevice::deinit(true), esp_now_deinit(), WiFi.mode(WIFI_OFF)
+//          — radio off so the modem isn't draining the rail.
+//        * Serial1.end() — release GPS UART pins.
+//        * MOTOR_PIN driven LOW and held via gpio_hold so the motor cannot
+//          spuriously twitch while pin drivers are gated.
+//        * rtc_gpio_pullup_en(GPIO_NUM_8) so the wake button retains its
+//          pull-up through deep sleep; EXT0 fires on the falling edge.
+//    - The 12 s "factory reset from sleep" gesture is preserved: continuing
+//      to hold past 12 s after entering UI_SLEEP still wipes NVS instead of
+//      sleeping. Releasing before 12 s commits to deep sleep. Holding 3 s
+//      after entering UI_SLEEP still wakes back to HOME without sleeping
+//      (an "abort" path for users who change their mind mid-hold).
+//
+//  BEHAVIOR (firmware 18 — GPS sync, retained):
+//    - GPS-sync characteristic (…abd6) lets iOS request a focused fix.
 //      The 2.4 GHz radio (BLE + ESP-NOW + WiFi) desenses the GNSS chipset's
 //      L1 front end enough that satellites are visible but a fix never
-//      converges. With radios fully off, sketch 02_gps_test reliably gets
-//      a fix in ~30 s on the same hardware (see arduino/gps_fix_tests/
-//      17_wearable_radios_off).
-//    - SYNC FLOW (reboot-based — an earlier in-process attempt to
-//      `NimBLEDevice::deinit()` mid-loop crashed the host task with
-//      InstrFetchProhibited; rebooting gives us a pristine RF environment
-//      that matches the radios-off diag sketch exactly):
-//        1. iOS writes 0x01 to abd6. Firmware fires a "running" notify
-//           and persists `syncpend=true` to NVS, then ESP.restart()s.
-//        2. setup() detects the flag *before any radio init* and routes
-//           into runFocusedFixOnBoot(): display + GPS UART only, no
-//           WiFi / ESP-NOW / NimBLE at all. 30 s countdown loop with an
-//           early-exit on first fresh fix. Result (success/failed) is
-//           persisted to NVS and the device reboots a second time.
-//        3. The clean boot picks up the persisted result, runs all the
-//           usual radio init, and the existing latched-result path
-//           pushes it over abd6 once iOS re-auths.
-//      Total user-visible blackout: ~40 s. iOS's 60 s outer timeout and
+//      converges. Reboot-based flow: iOS writes 0x01, firmware persists
+//      `syncpend=true` and ESP.restart()s; setup() detects it pre-radio-init
+//      and routes into runFocusedFixOnBoot() (display + GPS UART only) for
+//      a 30 s countdown poll; result is persisted and the device reboots a
+//      second time, then the latched-result path pushes it over abd6 once
+//      iOS re-auths. Total blackout ~40 s; iOS's 60 s outer timeout and
 //      DashboardView.reconnectLoop handle the BLE round-trip transparently.
 //
 // ============================================================
@@ -63,6 +80,9 @@
 #include <Preferences.h>
 #include <string.h>
 #include <math.h>
+#include "esp_sleep.h"
+#include "driver/rtc_io.h"
+#include "driver/gpio.h"
 
 // ---- Pin Definitions ----
 // XIAO ESP32S3: Arduino/ESP core uses SoC GPIO numbers, not the "D" index.
@@ -303,6 +323,19 @@ bool prevConnected = false;
 bool prevPhoneLinked = false;
 bool forceRedraw = true;
 
+// Last-valid-distance cache for the "Updated Xs ago" tracking-screen overlay
+// (firmware 19). Populated whenever getActiveDistance() returns >= 0 while a
+// target is selected; reset on saveTarget/clearTarget so a new peer never
+// inherits the previous peer's stale number. While the live distance is
+// unavailable but lastValidDistance >= 0, the tracking screen shows the
+// last value plus a ticking "ago" counter instead of the old "NO PEER"/---
+// collapse. prevAgoBucket lets us redraw the counter once per second
+// without thrashing the rest of the screen.
+double         lastValidDistance       = -1;
+unsigned long  lastValidDistanceTime   = 0;
+unsigned long  prevAgoBucket           = 0;
+bool           prevStale               = false;
+
 // Earth radius
 const double EARTH_RADIUS = 6371000.0;
 
@@ -330,7 +363,7 @@ unsigned long lastPeerLocationNotify = 0;
 #define GPS_SYNC_SUCCESS  0x02
 #define GPS_SYNC_FAILED   0x03
 
-#define GPS_SYNC_DURATION_MS  60000UL
+#define GPS_SYNC_DURATION_MS  30000UL
 #define GPS_SYNC_FRESH_AGE_MS 3000UL    // a "fresh" fix must be <3s old
 #define GPS_SYNC_RESULT_TTL_MS 60000UL  // latched result expires after 60s
 // Pause after queuing the "running" notify so the GATT response and notify
@@ -451,6 +484,14 @@ static unsigned long uiTripleWindowStartMs = 0;
 // Button edge tracking
 static int uiPrevBtnLevel = HIGH;
 static unsigned long uiBtnDownSince = 0;
+
+// True when the most recent boot was caused by EXT0 (button press out of
+// deep sleep). The wake press is still electrically held LOW for whatever
+// time the user keeps the button down post-wake, and we must NOT count that
+// hold toward the 5 s sleep / 3 s pair / etc. gestures — otherwise a
+// half-second wake press could immediately re-arm sleep. Cleared the first
+// time the button is observed HIGH after boot.
+static bool uiSuppressUntilRelease = false;
 
 // ---- Colors ----
 #define COLOR_BG      0x0000
@@ -1011,6 +1052,11 @@ void saveTarget(const uint8_t mac[6], const char* name) {
   rssiBufferIdx = 0;
   peerBleName[0] = '\0';
   lastPeerLocationNotify = 0;  // force a peer-location notify next loop
+  // Drop any "Updated Xs ago" cache from the previous peer.
+  lastValidDistance = -1;
+  lastValidDistanceTime = 0;
+  prevStale = false;
+  prevAgoBucket = 0;
   forceRedraw = true;
   notifySelected(targetMac);
   Serial.printf("[TARGET] Saved %s (%02X:%02X:%02X:%02X:%02X:%02X)\n",
@@ -1035,6 +1081,11 @@ void clearTarget() {
   rssiBufferIdx = 0;
   peerBleName[0] = '\0';
   lastPeerLocationNotify = 0;  // force a peer-location notify (valid=0) next loop
+  // Drop any "Updated Xs ago" cache so a future re-pair starts clean.
+  lastValidDistance = -1;
+  lastValidDistanceTime = 0;
+  prevStale = false;
+  prevAgoBucket = 0;
   forceRedraw = true;
   notifySelected(kClearedMacBytes);
   Serial.println("[TARGET] Cleared");
@@ -1371,6 +1422,56 @@ static void enterSleepUiOverlay() {
   Serial.println("[UI] Enter SLEEP (hold 5s)");
 }
 
+// Best-effort low-power shutdown sequence. Drops the ESP32-S3 into deep
+// sleep with EXT0 wake on the UI button. Hardware caveat: peripherals on
+// the always-on 3V3 LDO rail (display backlight, GPS module) keep drawing
+// current. The ESP itself drops from ~70 mA active to ~14 µA. Adding a
+// P-MOSFET high-side switch on display VCC and GPS VCC would unlock the
+// remaining ~60 mA — see arduino/20_wearable_deep_sleep header comment.
+[[noreturn]] static void enterDeepSleep() {
+  Serial.println("[SLEEP] Entering deep sleep — wake on button (GPIO8 LOW)");
+  Serial.flush();
+
+  // Black out the framebuffer so the always-on backlight at least shows a
+  // dark screen (the user reads this as "off" even though the LED is lit).
+  tft.fillScreen(COLOR_BG);
+  // GC9A01A 0x10 = sleep IN (display IC into low-power state, panel logic
+  // drops to µA; backlight is wired to VCC on the 7-pin Teyleten module).
+  // sendCommand() opens its own SPI transaction — safe to call cold.
+  tft.sendCommand(0x10);
+
+  // MAX30102 standby (~0.7 µA per Maxim datasheet).
+  if (maxFound) {
+    particleSensor.shutDown();
+  }
+
+  // Motor pin LOW + held through deep sleep so a floating gate cannot pulse
+  // the vibration motor while pin drivers are powered down.
+  digitalWrite(MOTOR_PIN, LOW);
+  gpio_hold_en((gpio_num_t)MOTOR_PIN);
+  gpio_deep_sleep_hold_en();
+
+  // Tear down radios cleanly. Order matters — NimBLE has a host task that
+  // outlives the controller; deinit(true) waits for it to exit before we
+  // pull the WiFi/PHY out from under it.
+  NimBLEDevice::deinit(true);
+  esp_now_deinit();
+  WiFi.disconnect(true, false);  // wifioff=true; preserve any stored AP creds
+  WiFi.mode(WIFI_OFF);
+
+  Serial1.end();
+
+  // Configure UI button (GPIO8) as EXT0 wake source — fires on LOW (press).
+  // RTC pull-up keeps the line idle-high through deep sleep so a press is a
+  // clean falling edge; without it the line floats and can wake spuriously.
+  rtc_gpio_pullup_en((gpio_num_t)PAIR_BUTTON_PIN);
+  rtc_gpio_pulldown_dis((gpio_num_t)PAIR_BUTTON_PIN);
+  esp_sleep_enable_ext0_wakeup((gpio_num_t)PAIR_BUTTON_PIN, 0);
+
+  esp_deep_sleep_start();  // never returns
+  while (true) {}          // unreachable — silences [[noreturn]]
+}
+
 static void armSosFromTripleTap() {
   if (uiScreen == UI_SOS) return;
   uiShowPairingAfterWake = false;
@@ -1407,6 +1508,19 @@ static void armSosFromTripleTap() {
 void updateUiButton() {
   const int level = digitalRead(PAIR_BUTTON_PIN);  // active-LOW
   const unsigned long now = millis();
+
+  // The press that wakes us out of deep sleep is still held LOW through
+  // boot. Ignore it entirely until we see a HIGH (release) — otherwise the
+  // user's wake-press could roll straight into a 5 s sleep gesture or
+  // similar and immediately put the device back to sleep.
+  if (uiSuppressUntilRelease) {
+    if (level == HIGH) {
+      uiSuppressUntilRelease = false;
+      uiPrevBtnLevel = HIGH;
+      uiBtnDownSince = 0;
+    }
+    return;
+  }
 
   // Held: Power OFF wake/factory, global 5s Power OFF, SOS 3s exit, HOME/NAV long-holds
   if (level == LOW) {
@@ -1474,6 +1588,14 @@ void updateUiButton() {
     if (uiPrevBtnLevel == LOW) {
       const unsigned long downMs = (uiBtnDownSince == 0) ? 0 : (now - uiBtnDownSince);
       const bool shortPress = (downMs > 0) && (downMs <= UI_SHORT_PRESS_MAX_MS);
+
+      // If we're still on the UI_SLEEP overlay at release time, neither the
+      // 3 s "abort" wake nor the 12 s factory reset fired (both would have
+      // changed uiScreen). That means the user held 5 s, saw "Power OFF",
+      // and released — commit to deep sleep. Does not return.
+      if (uiScreen == UI_SLEEP) {
+        enterDeepSleep();
+      }
 
       // Dismiss-incoming-SOS gesture (firmware 17): a single short tap while
       // any peer SOS overlay is visible dismisses just that overlay locally.
@@ -2298,7 +2420,7 @@ static void drawHomeScreen() {
   drawHomeRingDot(cx, cy, orbitR, 270.0, dr, dotCyan);   // 6 o'clock
 
   // FreeMono: white text centered over ring (drawn after ring so it sits on top).
-  const char* lines[] = {"Hello!", "1s-Connecting", "3s-Pairing"};
+  const char* lines[] = {"Hello!", "1s-Tracking", "3s-Pairing"};
   const int nHomeLines = (int)(sizeof(lines) / sizeof(lines[0]));
   tft.setFont(&FreeMono9pt7b);
   tft.setTextSize(1);
@@ -2541,21 +2663,45 @@ void updateDisplay() {
     return;
   }
 
-  double displayDist = getActiveDistance();
+  double liveDist = getActiveDistance();
+  bool   connected = (liveDist >= 0);
 
-  bool connected = (displayDist >= 0);
+  // Latch the freshest reading so we can keep displaying it after the radios
+  // go silent. updateMode() leaves `currentMode` pinned at the last working
+  // mode when nothing is live, so the mode chip up top remains coherent on
+  // its own; we only need to remember the distance and when we got it.
+  if (connected) {
+    lastValidDistance     = liveDist;
+    lastValidDistanceTime = millis();
+  }
+
+  // "Stale" = we don't have a live distance right now but we have one we can
+  // keep showing. The screen persists the last number and replaces the
+  // status line with an "Updated Xs ago" / "Updated Xm ago" counter.
+  bool stale = !connected && (lastValidDistance >= 0);
+
+  double         effectiveDist = stale ? lastValidDistance : liveDist;
+  unsigned long  agoSec        = stale ? ((millis() - lastValidDistanceTime) / 1000UL) : 0;
+  unsigned long  agoMin        = agoSec / 60UL;
+  // Bucket changes once per second below 60s, then once per minute. Used as
+  // a dirty key so the "ago" counter ticks without the surrounding fields
+  // having to change.
+  unsigned long  agoBucket     = (agoSec < 60UL) ? agoSec : (60UL + agoMin);
+
   bool phoneLinked = hasActiveConn && authedConn;
 
   // Fast path: if only the phone-link state changed, redraw just the icon
   // instead of the whole screen so the main UI stays flicker-free.
   bool distChanged = forceRedraw ||
-    (prevDisplayDist < 0 && displayDist >= 0) ||
-    (prevDisplayDist >= 0 && displayDist < 0) ||
-    (displayDist >= 0 && fabs(displayDist - prevDisplayDist) > 0.1) ||
+    (prevDisplayDist < 0 && effectiveDist >= 0) ||
+    (prevDisplayDist >= 0 && effectiveDist < 0) ||
+    (effectiveDist >= 0 && fabs(effectiveDist - prevDisplayDist) > 0.1) ||
     (currentMode != prevDisplayMode) ||
     (currentBPM != prevBPM) ||
     (fingerDetected != prevFinger) ||
-    (connected != prevConnected);
+    (connected != prevConnected) ||
+    (stale != prevStale) ||
+    (stale && agoBucket != prevAgoBucket);
 
   if (!distChanged) {
     if (phoneLinked != prevPhoneLinked) {
@@ -2565,11 +2711,13 @@ void updateDisplay() {
     return;
   }
 
-  prevDisplayDist = displayDist;
+  prevDisplayDist = effectiveDist;
   prevDisplayMode = currentMode;
   prevBPM = currentBPM;
   prevFinger = fingerDetected;
   prevConnected = connected;
+  prevStale = stale;
+  prevAgoBucket = agoBucket;
   prevPhoneLinked = phoneLinked;
   forceRedraw = false;
 
@@ -2596,11 +2744,23 @@ void updateDisplay() {
     tft.print(satBuf);
   }
 
+  // Status line: connected / "Updated Xs ago" / searching / no peer.
+  // The stale branch replaces the old "NO PEER" collapse so the wearer
+  // keeps seeing the last known distance plus a freshness counter.
+  char        agoBuf[24];
   const char* status;
-  uint16_t statusColor;
+  uint16_t    statusColor;
   if (connected) {
     status = "CONNECTED";
     statusColor = COLOR_GREEN;
+  } else if (stale) {
+    if (agoSec < 60UL) {
+      snprintf(agoBuf, sizeof(agoBuf), "Updated %lus ago", agoSec);
+    } else {
+      snprintf(agoBuf, sizeof(agoBuf), "Updated %lum ago", agoMin);
+    }
+    status = agoBuf;
+    statusColor = COLOR_YELLOW;
   } else if (peerReceived || peerBleFound) {
     status = "SEARCHING...";
     statusColor = COLOR_YELLOW;
@@ -2610,21 +2770,21 @@ void updateDisplay() {
   }
   drawCenteredText(status, 24, statusColor, 1);
 
-  const char* label = getProximityLabel(displayDist);
-  uint16_t color = getProximityColor(displayDist);
+  const char* label = getProximityLabel(effectiveDist);
+  uint16_t    color = getProximityColor(effectiveDist);
   drawCenteredText(label, 38, color, 2);
 
-  drawProximityRing(displayDist, color);
+  drawProximityRing(effectiveDist, color);
 
   char distBuf[20];
-  if (displayDist < 0) {
+  if (effectiveDist < 0) {
     snprintf(distBuf, sizeof(distBuf), "---");
-  } else if (displayDist < 100) {
-    snprintf(distBuf, sizeof(distBuf), "%.1f m", displayDist);
-  } else if (displayDist < 1000) {
-    snprintf(distBuf, sizeof(distBuf), "%d m", (int)displayDist);
+  } else if (effectiveDist < 100) {
+    snprintf(distBuf, sizeof(distBuf), "%.1f m", effectiveDist);
+  } else if (effectiveDist < 1000) {
+    snprintf(distBuf, sizeof(distBuf), "%d m", (int)effectiveDist);
   } else {
-    snprintf(distBuf, sizeof(distBuf), "%.2f km", displayDist / 1000.0);
+    snprintf(distBuf, sizeof(distBuf), "%.2f km", effectiveDist / 1000.0);
   }
   drawCenteredText(distBuf, 182, COLOR_WHITE, 2);
 
@@ -2640,7 +2800,9 @@ void updateDisplay() {
     }
   }
 
-  if (displayDist >= 0 && displayDist <= HAPTIC_RANGE_M) {
+  // Haptic indicator only when the live distance is in range — we don't
+  // buzz on cached numbers, so don't lie about it on screen either.
+  if (liveDist >= 0 && liveDist <= HAPTIC_RANGE_M) {
     tft.fillCircle(230, 230, 4, COLOR_PINK);
   }
 
@@ -2707,8 +2869,21 @@ void setup() {
   delay(2000);
 
   Serial.println("==========================================");
-  Serial.println("  Spatial Wearable — GPS Sync (18)");
+  Serial.println("  Spatial Wearable — Deep Sleep (20)");
   Serial.println("==========================================");
+
+  // Deep-sleep wake detection. enterDeepSleep() pinned MOTOR_PIN LOW via
+  // gpio_hold so the motor cannot pulse while pin drivers are gated; here
+  // we release the hold so normal digitalWrite() works again. We also flag
+  // uiSuppressUntilRelease so the wake-press itself can't trigger gestures.
+  esp_sleep_wakeup_cause_t wakeCause = esp_sleep_get_wakeup_cause();
+  if (wakeCause == ESP_SLEEP_WAKEUP_EXT0) {
+    Serial.println("[SETUP] Woke from deep sleep via button (EXT0)");
+    uiSuppressUntilRelease = true;
+    gpio_hold_dis((gpio_num_t)MOTOR_PIN);
+    gpio_deep_sleep_hold_dis();
+    rtc_gpio_deinit((gpio_num_t)PAIR_BUTTON_PIN);  // hand pin back to normal GPIO driver
+  }
 
   // GPS-sync re-entry check. If this boot was caused by a sync trigger
   // (loop() persisted syncpend=true and ESP.restart()ed), divert to the

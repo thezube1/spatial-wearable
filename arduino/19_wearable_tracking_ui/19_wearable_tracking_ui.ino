@@ -20,30 +20,33 @@
 //    Motor IN     --> D0  (GPIO1)
 //    UI button (tactile) --> D9 (GPIO8) + GND (active LOW). Do NOT use D10/GPIO9 — that pad is SPI MOSI to the LCD.
 //
-//  BEHAVIOR (firmware 18 — GPS sync):
-//    - All firmware-17 features intact (group SOS, candidate cycling,
-//      target select, peer location forwarding, persistent pairing, …).
-//    - NEW: GPS-sync characteristic (…abd6) lets iOS request a focused fix.
+//  BEHAVIOR (firmware 19 — tracking-screen UI polish):
+//    - All firmware-18 features intact (GPS-sync over abd6, group SOS,
+//      candidate cycling, target select, peer location forwarding, persistent
+//      pairing, …).
+//    - NEW: when actively tracking a peer and the live distance becomes
+//      unavailable (BLE timed out + GPS not yet/no-longer fresh), the
+//      tracking screen no longer collapses to "NO PEER" + "---". Instead it
+//      persists the last valid distance and replaces the status line with a
+//      ticking "Updated Xs ago" / "Updated Xm ago" counter so the wearer
+//      sees how stale the reading is. As soon as either radio (BLE or GPS)
+//      produces a fresh distance again, the counter, status, and number
+//      snap back to live. The fully-fresh "no peer ever" state still shows
+//      "NO PEER" / "SEARCHING…" + "---" since there is nothing to persist.
+//    - The persisted last-distance is reset whenever the tracked target
+//      changes (saveTarget / clearTarget), so switching peers never shows
+//      a stale number for the new selection.
+//
+//  BEHAVIOR (firmware 18 — GPS sync, retained):
+//    - GPS-sync characteristic (…abd6) lets iOS request a focused fix.
 //      The 2.4 GHz radio (BLE + ESP-NOW + WiFi) desenses the GNSS chipset's
 //      L1 front end enough that satellites are visible but a fix never
-//      converges. With radios fully off, sketch 02_gps_test reliably gets
-//      a fix in ~30 s on the same hardware (see arduino/gps_fix_tests/
-//      17_wearable_radios_off).
-//    - SYNC FLOW (reboot-based — an earlier in-process attempt to
-//      `NimBLEDevice::deinit()` mid-loop crashed the host task with
-//      InstrFetchProhibited; rebooting gives us a pristine RF environment
-//      that matches the radios-off diag sketch exactly):
-//        1. iOS writes 0x01 to abd6. Firmware fires a "running" notify
-//           and persists `syncpend=true` to NVS, then ESP.restart()s.
-//        2. setup() detects the flag *before any radio init* and routes
-//           into runFocusedFixOnBoot(): display + GPS UART only, no
-//           WiFi / ESP-NOW / NimBLE at all. 30 s countdown loop with an
-//           early-exit on first fresh fix. Result (success/failed) is
-//           persisted to NVS and the device reboots a second time.
-//        3. The clean boot picks up the persisted result, runs all the
-//           usual radio init, and the existing latched-result path
-//           pushes it over abd6 once iOS re-auths.
-//      Total user-visible blackout: ~40 s. iOS's 60 s outer timeout and
+//      converges. Reboot-based flow: iOS writes 0x01, firmware persists
+//      `syncpend=true` and ESP.restart()s; setup() detects it pre-radio-init
+//      and routes into runFocusedFixOnBoot() (display + GPS UART only) for
+//      a 30 s countdown poll; result is persisted and the device reboots a
+//      second time, then the latched-result path pushes it over abd6 once
+//      iOS re-auths. Total blackout ~40 s; iOS's 60 s outer timeout and
 //      DashboardView.reconnectLoop handle the BLE round-trip transparently.
 //
 // ============================================================
@@ -303,6 +306,19 @@ bool prevConnected = false;
 bool prevPhoneLinked = false;
 bool forceRedraw = true;
 
+// Last-valid-distance cache for the "Updated Xs ago" tracking-screen overlay
+// (firmware 19). Populated whenever getActiveDistance() returns >= 0 while a
+// target is selected; reset on saveTarget/clearTarget so a new peer never
+// inherits the previous peer's stale number. While the live distance is
+// unavailable but lastValidDistance >= 0, the tracking screen shows the
+// last value plus a ticking "ago" counter instead of the old "NO PEER"/---
+// collapse. prevAgoBucket lets us redraw the counter once per second
+// without thrashing the rest of the screen.
+double         lastValidDistance       = -1;
+unsigned long  lastValidDistanceTime   = 0;
+unsigned long  prevAgoBucket           = 0;
+bool           prevStale               = false;
+
 // Earth radius
 const double EARTH_RADIUS = 6371000.0;
 
@@ -330,7 +346,7 @@ unsigned long lastPeerLocationNotify = 0;
 #define GPS_SYNC_SUCCESS  0x02
 #define GPS_SYNC_FAILED   0x03
 
-#define GPS_SYNC_DURATION_MS  60000UL
+#define GPS_SYNC_DURATION_MS  30000UL
 #define GPS_SYNC_FRESH_AGE_MS 3000UL    // a "fresh" fix must be <3s old
 #define GPS_SYNC_RESULT_TTL_MS 60000UL  // latched result expires after 60s
 // Pause after queuing the "running" notify so the GATT response and notify
@@ -1011,6 +1027,11 @@ void saveTarget(const uint8_t mac[6], const char* name) {
   rssiBufferIdx = 0;
   peerBleName[0] = '\0';
   lastPeerLocationNotify = 0;  // force a peer-location notify next loop
+  // Drop any "Updated Xs ago" cache from the previous peer.
+  lastValidDistance = -1;
+  lastValidDistanceTime = 0;
+  prevStale = false;
+  prevAgoBucket = 0;
   forceRedraw = true;
   notifySelected(targetMac);
   Serial.printf("[TARGET] Saved %s (%02X:%02X:%02X:%02X:%02X:%02X)\n",
@@ -1035,6 +1056,11 @@ void clearTarget() {
   rssiBufferIdx = 0;
   peerBleName[0] = '\0';
   lastPeerLocationNotify = 0;  // force a peer-location notify (valid=0) next loop
+  // Drop any "Updated Xs ago" cache so a future re-pair starts clean.
+  lastValidDistance = -1;
+  lastValidDistanceTime = 0;
+  prevStale = false;
+  prevAgoBucket = 0;
   forceRedraw = true;
   notifySelected(kClearedMacBytes);
   Serial.println("[TARGET] Cleared");
@@ -2541,21 +2567,45 @@ void updateDisplay() {
     return;
   }
 
-  double displayDist = getActiveDistance();
+  double liveDist = getActiveDistance();
+  bool   connected = (liveDist >= 0);
 
-  bool connected = (displayDist >= 0);
+  // Latch the freshest reading so we can keep displaying it after the radios
+  // go silent. updateMode() leaves `currentMode` pinned at the last working
+  // mode when nothing is live, so the mode chip up top remains coherent on
+  // its own; we only need to remember the distance and when we got it.
+  if (connected) {
+    lastValidDistance     = liveDist;
+    lastValidDistanceTime = millis();
+  }
+
+  // "Stale" = we don't have a live distance right now but we have one we can
+  // keep showing. The screen persists the last number and replaces the
+  // status line with an "Updated Xs ago" / "Updated Xm ago" counter.
+  bool stale = !connected && (lastValidDistance >= 0);
+
+  double         effectiveDist = stale ? lastValidDistance : liveDist;
+  unsigned long  agoSec        = stale ? ((millis() - lastValidDistanceTime) / 1000UL) : 0;
+  unsigned long  agoMin        = agoSec / 60UL;
+  // Bucket changes once per second below 60s, then once per minute. Used as
+  // a dirty key so the "ago" counter ticks without the surrounding fields
+  // having to change.
+  unsigned long  agoBucket     = (agoSec < 60UL) ? agoSec : (60UL + agoMin);
+
   bool phoneLinked = hasActiveConn && authedConn;
 
   // Fast path: if only the phone-link state changed, redraw just the icon
   // instead of the whole screen so the main UI stays flicker-free.
   bool distChanged = forceRedraw ||
-    (prevDisplayDist < 0 && displayDist >= 0) ||
-    (prevDisplayDist >= 0 && displayDist < 0) ||
-    (displayDist >= 0 && fabs(displayDist - prevDisplayDist) > 0.1) ||
+    (prevDisplayDist < 0 && effectiveDist >= 0) ||
+    (prevDisplayDist >= 0 && effectiveDist < 0) ||
+    (effectiveDist >= 0 && fabs(effectiveDist - prevDisplayDist) > 0.1) ||
     (currentMode != prevDisplayMode) ||
     (currentBPM != prevBPM) ||
     (fingerDetected != prevFinger) ||
-    (connected != prevConnected);
+    (connected != prevConnected) ||
+    (stale != prevStale) ||
+    (stale && agoBucket != prevAgoBucket);
 
   if (!distChanged) {
     if (phoneLinked != prevPhoneLinked) {
@@ -2565,11 +2615,13 @@ void updateDisplay() {
     return;
   }
 
-  prevDisplayDist = displayDist;
+  prevDisplayDist = effectiveDist;
   prevDisplayMode = currentMode;
   prevBPM = currentBPM;
   prevFinger = fingerDetected;
   prevConnected = connected;
+  prevStale = stale;
+  prevAgoBucket = agoBucket;
   prevPhoneLinked = phoneLinked;
   forceRedraw = false;
 
@@ -2596,11 +2648,23 @@ void updateDisplay() {
     tft.print(satBuf);
   }
 
+  // Status line: connected / "Updated Xs ago" / searching / no peer.
+  // The stale branch replaces the old "NO PEER" collapse so the wearer
+  // keeps seeing the last known distance plus a freshness counter.
+  char        agoBuf[24];
   const char* status;
-  uint16_t statusColor;
+  uint16_t    statusColor;
   if (connected) {
     status = "CONNECTED";
     statusColor = COLOR_GREEN;
+  } else if (stale) {
+    if (agoSec < 60UL) {
+      snprintf(agoBuf, sizeof(agoBuf), "Updated %lus ago", agoSec);
+    } else {
+      snprintf(agoBuf, sizeof(agoBuf), "Updated %lum ago", agoMin);
+    }
+    status = agoBuf;
+    statusColor = COLOR_YELLOW;
   } else if (peerReceived || peerBleFound) {
     status = "SEARCHING...";
     statusColor = COLOR_YELLOW;
@@ -2610,21 +2674,21 @@ void updateDisplay() {
   }
   drawCenteredText(status, 24, statusColor, 1);
 
-  const char* label = getProximityLabel(displayDist);
-  uint16_t color = getProximityColor(displayDist);
+  const char* label = getProximityLabel(effectiveDist);
+  uint16_t    color = getProximityColor(effectiveDist);
   drawCenteredText(label, 38, color, 2);
 
-  drawProximityRing(displayDist, color);
+  drawProximityRing(effectiveDist, color);
 
   char distBuf[20];
-  if (displayDist < 0) {
+  if (effectiveDist < 0) {
     snprintf(distBuf, sizeof(distBuf), "---");
-  } else if (displayDist < 100) {
-    snprintf(distBuf, sizeof(distBuf), "%.1f m", displayDist);
-  } else if (displayDist < 1000) {
-    snprintf(distBuf, sizeof(distBuf), "%d m", (int)displayDist);
+  } else if (effectiveDist < 100) {
+    snprintf(distBuf, sizeof(distBuf), "%.1f m", effectiveDist);
+  } else if (effectiveDist < 1000) {
+    snprintf(distBuf, sizeof(distBuf), "%d m", (int)effectiveDist);
   } else {
-    snprintf(distBuf, sizeof(distBuf), "%.2f km", displayDist / 1000.0);
+    snprintf(distBuf, sizeof(distBuf), "%.2f km", effectiveDist / 1000.0);
   }
   drawCenteredText(distBuf, 182, COLOR_WHITE, 2);
 
@@ -2640,7 +2704,9 @@ void updateDisplay() {
     }
   }
 
-  if (displayDist >= 0 && displayDist <= HAPTIC_RANGE_M) {
+  // Haptic indicator only when the live distance is in range — we don't
+  // buzz on cached numbers, so don't lie about it on screen either.
+  if (liveDist >= 0 && liveDist <= HAPTIC_RANGE_M) {
     tft.fillCircle(230, 230, 4, COLOR_PINK);
   }
 
@@ -2707,7 +2773,7 @@ void setup() {
   delay(2000);
 
   Serial.println("==========================================");
-  Serial.println("  Spatial Wearable — GPS Sync (18)");
+  Serial.println("  Spatial Wearable — Tracking UI (19)");
   Serial.println("==========================================");
 
   // GPS-sync re-entry check. If this boot was caused by a sync trigger
