@@ -260,6 +260,23 @@ static void hrOnBeatDetected() {
 Adafruit_GC9A01A tft(TFT_CS, TFT_DC, TFT_RST);
 TinyGPSPlus gps;
 
+// Per-constellation "satellites in view" parsers. GSV sentence field 3
+// (0-indexed) = total sats in view for that talker. The ATGM336H emits all
+// four families when its multi-GNSS mode is enabled (GP=GPS, BD=BeiDou,
+// GL=GLONASS, GA=Galileo). Used during the focused-fix sync to log how many
+// satellites are *visible* even before any of them get used in a fix —
+// matches the diagnostic format in arduino/02_gps_test and
+// arduino/gps_fix_tests/17_wearable_radios_off.
+TinyGPSCustom gpsInView(gps, "GPGSV", 3);
+TinyGPSCustom bdInView(gps, "BDGSV", 3);
+TinyGPSCustom glInView(gps, "GLGSV", 3);
+TinyGPSCustom gaInView(gps, "GAGSV", 3);
+
+static int parseGsvCount(const char* s) {
+  if (!s || !*s) return 0;
+  return atoi(s);
+}
+
 // ---- State ----
 char peerBleName[10] = "";
 
@@ -2009,40 +2026,104 @@ void triggerSyncReboot() {
   unsigned long pollLastDisplay = 0;
   unsigned long pollLastLog = 0;
   bool gotFix = false;
+  bool firstSatLogged = false;     // milestone: any constellation in view
+  bool firstUsedLogged = false;    // milestone: any sat used in the fix
+  unsigned long lastBytesAt = 0;
+  unsigned long prevChars = 0;
 
   while (millis() - syncStart < GPS_SYNC_DURATION_MS) {
     while (Serial1.available()) {
       gps.encode(Serial1.read());
+      lastBytesAt = millis();
     }
 
     unsigned long now = millis();
+    unsigned long elapsed = now - syncStart;
+
     if (now - pollLastDisplay >= 500) {
       pollLastDisplay = now;
-      int remaining = (int)((GPS_SYNC_DURATION_MS - (now - syncStart)) / 1000);
+      int remaining = (int)((GPS_SYNC_DURATION_MS - elapsed) / 1000);
       drawGpsSyncScreen(remaining);
+    }
+
+    // Snapshot the per-constellation visibility every loop so milestone
+    // logs fire as soon as the first GSV sentence arrives, not on the next
+    // 1 Hz tick.
+    int viewGps = parseGsvCount(gpsInView.value());
+    int viewBd  = parseGsvCount(bdInView.value());
+    int viewGl  = parseGsvCount(glInView.value());
+    int viewGa  = parseGsvCount(gaInView.value());
+    int viewTot = viewGps + viewBd + viewGl + viewGa;
+    int used    = gps.satellites.isValid() ? (int)gps.satellites.value() : 0;
+    bool hasFix = gps.location.isValid() && gps.location.age() < GPS_SYNC_FRESH_AGE_MS;
+
+    if (!firstSatLogged && viewTot > 0) {
+      firstSatLogged = true;
+      Serial.printf("[SYNC-BOOT] >>> First satellite VISIBLE at t=%lums "
+                    "(GPS=%d BD=%d GL=%d GA=%d) <<<\n",
+                    elapsed, viewGps, viewBd, viewGl, viewGa);
+    }
+    if (!firstUsedLogged && used > 0) {
+      firstUsedLogged = true;
+      Serial.printf("[SYNC-BOOT] >>> First satellite USED IN FIX at t=%lums "
+                    "(used=%d of %d visible) <<<\n",
+                    elapsed, used, viewTot);
     }
 
     if (now - pollLastLog >= 1000) {
       pollLastLog = now;
-      int sats = gps.satellites.isValid() ? gps.satellites.value() : 0;
-      Serial.printf("[SYNC-BOOT t=%2lus] used=%d  fix=%s  age=%lums  chars=%lu\n",
-                    (now - syncStart) / 1000, sats,
-                    gps.location.isValid() ? "Y" : "N",
-                    gps.location.age(), gps.charsProcessed());
+      const char* state = hasFix ? "FIX" : (viewTot > 0 ? "ACQ" : "---");
+      // bytes/sec from GPS UART — useful sanity check that the antenna /
+      // module is actually streaming (vs. silent UART = wiring/power issue).
+      unsigned long deltaChars = gps.charsProcessed() - prevChars;
+      prevChars = gps.charsProcessed();
+      Serial.printf("[SYNC-BOOT t=%2lus] %s  view: GPS=%d BD=%d GL=%d GA=%d "
+                    "(tot %d) | used=%d",
+                    elapsed / 1000, state,
+                    viewGps, viewBd, viewGl, viewGa, viewTot, used);
+      if (gps.hdop.isValid() && gps.hdop.hdop() < 25.0) {
+        Serial.printf(" | HDOP %.1f", gps.hdop.hdop());
+      }
+      Serial.printf(" | rx %lub/s | age=%lums\n", deltaChars, gps.location.age());
+
+      // Loud warning if the GPS UART isn't producing any bytes — points the
+      // user at hardware (TX/RX swap, GPS not powered, antenna detached)
+      // rather than letting them assume the radios-off magic isn't working.
+      if (lastBytesAt == 0 && elapsed > 3000) {
+        Serial.println("[SYNC-BOOT] !! No bytes from GPS UART after 3s. "
+                       "Check D6/D7 wiring + GPS power.");
+      }
     }
 
-    if (gps.location.isValid() && gps.location.age() < GPS_SYNC_FRESH_AGE_MS) {
+    if (hasFix) {
       gotFix = true;
-      Serial.printf("[SYNC-BOOT] *** FRESH FIX at t=%lums *** lat=%.6f lon=%.6f\n",
-                    millis() - syncStart, gps.location.lat(), gps.location.lng());
+      Serial.printf("[SYNC-BOOT] *** FRESH FIX at t=%lums *** "
+                    "lat=%.6f lon=%.6f alt=%.1fm  used=%d/%d visible\n",
+                    elapsed, gps.location.lat(), gps.location.lng(),
+                    gps.altitude.isValid() ? gps.altitude.meters() : 0.0,
+                    used, viewTot);
       break;
     }
 
     delay(10);
   }
 
-  Serial.printf("[SYNC-BOOT] Done after %lums — %s\n",
-                millis() - syncStart, gotFix ? "SUCCESS" : "FAILED");
+  // Final summary line: even on FAILED, show the best visibility we saw so
+  // the user can tell whether the antenna saw anything vs. silent silence.
+  {
+    int viewGps = parseGsvCount(gpsInView.value());
+    int viewBd  = parseGsvCount(bdInView.value());
+    int viewGl  = parseGsvCount(glInView.value());
+    int viewGa  = parseGsvCount(gaInView.value());
+    int viewTot = viewGps + viewBd + viewGl + viewGa;
+    int used    = gps.satellites.isValid() ? (int)gps.satellites.value() : 0;
+    Serial.printf("[SYNC-BOOT] Done after %lums — %s "
+                  "(final view: GPS=%d BD=%d GL=%d GA=%d (tot %d) | used=%d | "
+                  "chars rcvd=%lu)\n",
+                  millis() - syncStart, gotFix ? "SUCCESS" : "FAILED",
+                  viewGps, viewBd, viewGl, viewGa, viewTot, used,
+                  gps.charsProcessed());
+  }
 
   // Persist the result and clear the pending flag. The next clean boot
   // (below) reads syncres and the existing latched-result push notifies iOS.
